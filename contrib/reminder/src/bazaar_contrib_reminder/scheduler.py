@@ -1,0 +1,478 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
+from uuid import uuid7
+
+from bazaar_contrib_messages import Agent, Thread, ThreadConcurrency
+from bazaar_contrib_messages.correlation import CorrelationContext
+from bazaar_contrib_messages.models import InboundAttachment, Message, SenderIdentity
+from bazaar_contrib_messages.states import (
+    ErrorKind,
+    MessageDirection,
+    RuntimeEventState,
+    SenderKind,
+    SystemMessageKind,
+)
+from bazaar_contrib_timer import (
+    Timer,
+    TimerCancelledError,
+    TimerClosedError,
+    TimerHandle,
+)
+
+from .audit import ReminderAudit
+from .clock import now_ms
+from .lifecycle import TaskFailureSignal
+from .models import OwnedReminder, Reminder, ReminderState
+from .reminder import next_recurrence_ms, render_reminder_fire_body
+from .store import ReminderStore
+
+_WALL_CLOCK_RECHECK_MS = 60_000
+_CYCLE_RETRY_MS = 5_000
+_DUE_BATCH_SIZE = 100
+
+
+def reminder_audit_metadata(
+    reminder: Reminder, anchor: Message | None
+) -> dict[str, object]:
+    """What every Reminder audit event says about the Reminder it concerns."""
+
+    return {
+        "reminder_id": reminder.reminder_id,
+        "title": reminder.title,
+        "state": reminder.state.value,
+        "next_fire_at_ms": reminder.next_fire_at_ms,
+        "repeat_rule": reminder.repeat_rule,
+        "timezone": reminder.timezone,
+        "revision": reminder.revision,
+        "last_fired_at_ms": reminder.last_fired_at_ms,
+        "anchor_message_id": reminder.anchor_message_id,
+        "target": None if anchor is None else anchor.target,
+        "target_kind": None if anchor is None else anchor.target_kind.value,
+        "target_name": (
+            None
+            if anchor is None or anchor.target_presentation is None
+            else anchor.target_presentation.display_name
+        ),
+    }
+
+
+def reminder_correlation(
+    agent: Agent, reminder: Reminder, anchor: Message | None
+) -> CorrelationContext:
+    return CorrelationContext(
+        node_id=agent.id,
+        channel=None if anchor is None else anchor.channel,
+        channel_session_id=None if anchor is None else anchor.channel_session_id,
+        thread_id=reminder.owner_thread_id,
+    )
+
+
+async def resolve_reminder_anchor(
+    storage: ReminderStore,
+    agent: Agent,
+    message: Message,
+) -> Message | None:
+    """Return the inbound message a fired Reminder speaks for.
+
+    A Reminder system message carries no provider identity of its own, so
+    everything the runtime addresses back to the Channel — approval prompts,
+    error feedback — has to resolve the human anchor the Reminder was
+    scheduled against. Non-Reminder messages speak for themselves.
+    """
+    if message.system_message_kind is not SystemMessageKind.REMINDER:
+        return message
+    reminder_id = message.metadata.get("reminder_id")
+    if not isinstance(reminder_id, str):
+        return None
+    try:
+        reminder = await storage.get_reminder(Thread(message.thread_id), reminder_id)
+    except ValueError:
+        return None
+    if reminder is None:
+        return None
+    return await storage.get_owned_message(
+        agent,
+        Thread(reminder.owner_thread_id),
+        reminder.anchor_message_id,
+        direction=MessageDirection.INBOUND,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Dormant:
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _Running:
+    task: asyncio.Task[None]
+    timer: TimerHandle | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Stopping(_Running):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _Stopped:
+    pass
+
+
+class ReminderScheduler:
+    """Materialize durable Reminder occurrences with one global frontier timer."""
+
+    def __init__(
+        self,
+        *,
+        storage: ReminderStore,
+        timer: Timer,
+        concurrency: ThreadConcurrency,
+        wake: Callable[[Agent, Message[InboundAttachment]], Awaitable[bool]],
+        audit: ReminderAudit,
+        clock: Callable[[], int] | None = None,
+    ) -> None:
+        self._storage = storage
+        self._timer = timer
+        self._concurrency = concurrency
+        self._wake = wake
+        self._audit = audit
+        self._clock = clock or now_ms
+        self._poke = asyncio.Event()
+        self._failure = TaskFailureSignal()
+        self._state: _Dormant | _Running | _Stopping | _Stopped = _Dormant()
+        self._logger = logging.getLogger("bazaar_compute_node.orchestration.reminder")
+
+    def poke(self) -> None:
+        if not isinstance(self._state, (_Stopping, _Stopped)):
+            self._poke.set()
+
+    async def start(self, *, timeout: float) -> None:  # noqa: ASYNC109
+        if isinstance(self._state, _Running):
+            return
+        if isinstance(self._state, _Stopped):
+            raise RuntimeError("reminder scheduler is stopping")  # noqa: TRY004
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        self._poke.clear()
+        async with asyncio.timeout(timeout):
+            await self._publish_pending_recovery()
+            await self._materialize_due_batches()
+        self._failure.reset()
+        task = asyncio.create_task(
+            self._run(),
+            name="bcn-reminder-scheduler",
+        )
+        self._state = _Running(task)
+        self._failure.observe(task, component="reminder scheduler")
+
+    async def stop(self, *, timeout: float) -> None:  # noqa: ASYNC109
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        state = self._state
+        if not isinstance(state, _Running):
+            return
+        task = state.task
+        self._failure.disable()
+        self._state = _Stopping(task, state.timer)
+        self._poke.set()
+        timer = state.timer
+        if timer is not None and timer.active:
+            timer.cancel()
+        if task.done():
+            await asyncio.gather(task, return_exceptions=True)
+            self._state = _Stopped()
+            return
+        try:
+            async with asyncio.timeout(timeout):
+                await task
+        except TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        self._state = _Stopped()
+
+    async def wait_failure(self) -> None:
+        await self._failure.wait()
+
+    async def _run(self) -> None:
+        while not isinstance(self._state, (_Stopping, _Stopped)):
+            try:
+                await self._materialize_due_batches()
+                if isinstance(self._state, (_Stopping, _Stopped)):
+                    return
+                frontier = await self._storage.get_next_scheduled_owned_reminder()
+                if frontier is None:
+                    await self._poke.wait()
+                    self._poke.clear()
+                    continue
+                next_fire_at_ms = frontier.reminder.next_fire_at_ms
+                if next_fire_at_ms is None:
+                    await self._poke.wait()
+                    self._poke.clear()
+                    continue
+                remaining_ms = next_fire_at_ms - self._clock()
+                if remaining_ms <= 0:
+                    await asyncio.sleep(0)
+                    continue
+                delay_ms = min(
+                    remaining_ms,
+                    self._timer.maximum_delay_ms - self._timer.tick_ms,
+                    _WALL_CLOCK_RECHECK_MS,
+                )
+                await self._wait_for_frontier(delay_ms)
+            except Exception:
+                self._logger.exception("reminder cycle failed; retrying")
+                try:
+                    await asyncio.wait_for(
+                        self._poke.wait(),
+                        _CYCLE_RETRY_MS / 1_000,
+                    )
+                except TimeoutError:
+                    pass
+                self._poke.clear()
+
+    async def _wait_for_frontier(self, delay_ms: int) -> None:
+        timer = self._timer.create(delay_ms)
+        state = self._state
+        assert isinstance(state, _Running)
+        self._state = replace(state, timer=timer)
+        timer_task = asyncio.create_task(timer.wait())
+        poke_task = asyncio.create_task(self._poke.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (timer_task, poke_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if poke_task in done:
+                poke_task.result()
+                self._poke.clear()
+            if timer_task in done:
+                try:
+                    timer_task.result()
+                except TimerCancelledError:
+                    pass
+                except TimerClosedError:
+                    if not isinstance(self._state, (_Stopping, _Stopped)):
+                        raise
+        finally:
+            if not timer_task.done():
+                timer_task.cancel()
+            if not poke_task.done():
+                poke_task.cancel()
+            await asyncio.gather(timer_task, poke_task, return_exceptions=True)
+            if timer.active:
+                timer.cancel()
+            state = self._state
+            if isinstance(state, _Running) and state.timer is timer:
+                self._state = replace(state, timer=None)
+
+    async def _publish_pending_recovery(self) -> None:
+        owners = await self._storage.list_unread_message_owners()
+        for owner in owners:
+            await self._publish_message(owner.agent, owner.trigger_message)
+
+    async def _materialize_due_batches(self) -> None:
+        while not isinstance(self._state, (_Stopping, _Stopped)):
+            now_ms = self._clock()
+            due = await self._storage.list_due_owned_reminders(
+                now_ms,
+                limit=_DUE_BATCH_SIZE,
+            )
+            if not due:
+                return
+            materialized: list[tuple[Agent, Message[InboundAttachment]]] = []
+            try:
+                for reminder in due:
+                    result = await self._materialize_due_reminder(reminder)
+                    if result is not None:
+                        materialized.append(result)
+            finally:
+                # a reminder that already fired is no longer due, and pending
+                # recovery only runs at startup, so anything committed before
+                # the failure has to be woken on the way out
+                for agent, message in sorted(
+                    materialized,
+                    key=lambda item: (item[0].id, item[1].thread_id, item[1].seq),
+                ):
+                    await self._publish_message(agent, message)
+            await asyncio.sleep(0)
+
+    async def _materialize_due_reminder(
+        self,
+        snapshot: OwnedReminder,
+    ) -> tuple[Agent, Message[InboundAttachment]] | None:
+        owner = snapshot.owner
+        async with self._concurrency.for_thread(owner.thread):
+            current_owned = await self._storage.get_owned_reminder(
+                owner.agent,
+                owner.thread,
+                snapshot.reminder.reminder_id,
+            )
+            if current_owned is None:
+                return None
+            current = current_owned.reminder
+            if (
+                current.state is not ReminderState.SCHEDULED
+                or current.revision != snapshot.reminder.revision
+                or current.next_fire_at_ms != snapshot.reminder.next_fire_at_ms
+            ):
+                return None
+            scheduled_for_ms = current.next_fire_at_ms
+            if scheduled_for_ms is None:
+                return None
+            fired_at_ms = self._clock()
+            if fired_at_ms < scheduled_for_ms:
+                return None
+            try:
+                next_fire_at_ms = (
+                    await asyncio.to_thread(
+                        next_recurrence_ms,
+                        scheduled_for_ms=scheduled_for_ms,
+                        repeat_rule=current.repeat_rule,
+                        timezone=current.timezone,
+                    )
+                    if current.repeat_rule is not None
+                    else None
+                )
+            except Exception as error:  # noqa: BLE001
+                await self._cancel_unusable_reminder(
+                    owner.agent,
+                    current,
+                    "reminder recurrence is invalid",
+                    at_ms=fired_at_ms,
+                    error=error,
+                )
+                return None
+            fired = current.record_fire(
+                scheduled_for_ms=scheduled_for_ms,
+                fired_at_ms=fired_at_ms,
+                next_fire_at_ms=next_fire_at_ms,
+            )
+            anchor = await self._storage.get_owned_message(
+                owner.agent,
+                Thread(current.owner_thread_id),
+                current.anchor_message_id,
+                direction=MessageDirection.INBOUND,
+            )
+            if anchor is None:
+                await self._cancel_unusable_reminder(
+                    owner.agent,
+                    current,
+                    "reminder anchor is missing",
+                    at_ms=fired_at_ms,
+                )
+                return None
+            system_message = Message[InboundAttachment](
+                direction=MessageDirection.INBOUND,
+                seq=0,
+                message_id=str(uuid7()),
+                thread_id=current.owner_thread_id,
+                channel_session_id=anchor.channel_session_id,
+                channel=anchor.channel,
+                provider_thread_id=anchor.provider_thread_id,
+                provider_message_id=None,
+                provider_time_ms=None,
+                received_at_ms=fired_at_ms,
+                sender=SenderIdentity(name="system"),
+                message_type="text",
+                target=anchor.target,
+                target_kind=anchor.target_kind,
+                body=render_reminder_fire_body(
+                    fired,
+                    anchor.target,
+                    next_fire_at_ms,
+                ),
+                mentions_agent=False,
+                notifies_runtime=True,
+                metadata={
+                    "sender_kind": SenderKind.SYSTEM.value,
+                    "system_message_kind": SystemMessageKind.REMINDER.value,
+                    "reminder_id": current.reminder_id,
+                },
+            )
+            materialized = await self._storage.materialize_owned_reminder_message(
+                current.revision,
+                OwnedReminder(owner.agent, fired),
+                system_message,
+            )
+            if materialized is None:
+                return None
+            await self._audit.append(
+                event_name="reminder.fired",
+                state=RuntimeEventState.COMPLETED,
+                correlation=reminder_correlation(owner.agent, fired, anchor),
+                metadata={
+                    **reminder_audit_metadata(fired, anchor),
+                    "scheduled_for_ms": scheduled_for_ms,
+                },
+            )
+            return owner.agent, materialized
+
+    async def _cancel_unusable_reminder(
+        self,
+        agent: Agent,
+        reminder: Reminder,
+        reason: str,
+        *,
+        at_ms: int | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        """Retire one Reminder that can never fire, so the frontier keeps moving."""
+
+        canceled = reminder.cancel(at_ms=at_ms if at_ms is not None else self._clock())
+        retired = await self._storage.save_owned_reminder_transition(
+            reminder.revision,
+            OwnedReminder(agent, canceled),
+        )
+        if retired is None:
+            return
+        await self._audit.append(
+            event_name="reminder.canceled",
+            state=RuntimeEventState.FAILED,
+            correlation=reminder_correlation(agent, retired, None),
+            error_kind=ErrorKind.INTERNAL,
+            error_message=reason,
+            metadata=reminder_audit_metadata(retired, None),
+        )
+        self._logger.error(
+            "%s; reminder canceled",
+            reason,
+            extra={
+                "agent_id": agent.id,
+                "owner_thread_id": reminder.owner_thread_id,
+                "reminder_id": reminder.reminder_id,
+                "anchor_message_id": reminder.anchor_message_id,
+            },
+            exc_info=(
+                (type(error), error, error.__traceback__) if error is not None else None
+            ),
+        )
+
+    async def _publish_message(
+        self,
+        agent: Agent,
+        message: Message[InboundAttachment],
+    ) -> None:
+        try:
+            await self._wake(agent, message)
+        except Exception:
+            self._logger.exception(
+                "reminder wake publish failed",
+                extra={
+                    "agent_id": agent.id,
+                    "owner_thread_id": message.thread_id,
+                },
+            )
+
+
+__all__ = [
+    "ReminderScheduler",
+    "reminder_audit_metadata",
+    "reminder_correlation",
+    "resolve_reminder_anchor",
+]

@@ -1,0 +1,25 @@
+[project]
+name = "bazaar-contrib-example"
+version = "0.1.0"
+requires-python = ">=3.15"
+dependencies = [
+    "bazaar-core~=0.3.0rc1",
+    "bazaar-contrib-invoke~=0.3.0rc1",
+    "aiofiles>=25.1.0",
+]
+
+[project.optional-dependencies]
+text = ["idna>=3.10"]
+
+[project.entry-points."bazaar_compute_node.contribs"]
+example-file = "bazaar_contrib_example:file"
+example-consumer = "bazaar_contrib_example:consumer"
+example-reader = "bazaar_contrib_example:reader"
+example-commands = "bazaar_contrib_example.commands:commands"
+
+[project.entry-points."bazaar_compute_node.commands"]
+example = "bazaar_contrib_example.commands:command_entry"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

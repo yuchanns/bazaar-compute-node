@@ -1,87 +1,68 @@
 [project]
-name = "bazaar-compute-node"
-version = "0.2.2"
-description = "Runtime-agnostic computer node daemon for agents and channels."
-readme = "README.md"
-license = "AGPL-3.0-only"
-license-files = ["LICENSE"]
-requires-python = ">=3.14"
-dependencies = [
-    "aiohttp>=3.12.0",
-    "aiosqlite>=0.20.0",
-    "click>=8.1.0",
-    "cryptography>=45.0.0",
-    "jinja2>=3.1.6",
-    "packaging>=25.0",
-    "pydantic>=2.0.0",
-    "protobug==1.0.0",
-    "tzdata>=2024.1; sys_platform == 'win32'",
-    "starlette>=1.6.0",
-    "uvicorn>=0.53.0",
-    "uvloop>=0.22.1 ; sys_platform != 'win32'",
-    "httptools>=0.8.0",
-    "python-multipart>=0.0.32",
-    "yarl>=1.18",
-    "markdown-it-py>=4.2.0",
-    "pygments>=2.20.0",
-    "authlib>=1.8.0",
-    "joserfc>=1.7.5",
-    "httpx2>=2.13.1",
-]
-
-[project.urls]
-Repository = "https://github.com/yuchanns/bazaar-compute-node"
-
-[project.scripts]
-bcn = "bazaar_compute_node.cli:main"
-bcs = "bazaar_compute_server.cli:main"
-
-[project.entry-points."bazaar_compute_node.runtimes"]
-codex = "bazaar_compute_node.contrib.codex.plugin:builder"
-claudecode = "bazaar_compute_node.contrib.claude.plugin:builder"
-
-[project.entry-points."bazaar_compute_node.channels"]
-wecom = "bazaar_compute_node.contrib.wecom.plugin:builder"
-telegram = "bazaar_compute_node.contrib.telegram.plugin:builder"
-lark = "bazaar_compute_node.contrib.lark.plugin:builder"
-
-[project.entry-points."bazaar_compute_node.storages"]
-sqlite = "bazaar_compute_node.contrib.sqlite.plugin:create_storage"
-
-[project.entry-points."bazaar_compute_server.storages"]
-sqlite = "bazaar_compute_server.contrib.sqlite.plugin:create_storage"
-
-[project.entry-points."bazaar_compute_node.audits"]
-logging = "bazaar_compute_node.contrib.logging.plugin:create_audit"
-server = "bazaar_compute_node.contrib.server.plugin:create_audit"
-
-[project.entry-points."bazaar_compute_node.controls"]
-server = "bazaar_compute_node.contrib.server.plugin:create_control"
+name = "bcn-workspace"
+version = "0.0.0"
+requires-python = ">=3.15"
+dependencies = []
 
 [dependency-groups]
 dev = [
+    "aiofiles>=25.1.0",
+    "aiosqlite>=0.20.0",
     "bcn-test-support",
-    "pyright==1.1.408",
+    "blockbuster>=1.5.29,<1.6",
+    "packaging>=25.0",
+    "pydantic>=2.12.0",
+    "pyright==1.1.414",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.9.0",
+    "types-aiofiles>=25.1.0",
+    "uv_build>=0.13.0,<0.14.0",
 ]
 
+[tool.uv]
+package = false
+
 [tool.uv.sources]
+bazaar-compute-node = { workspace = true }
+bazaar-core = { workspace = true }
+bazaar-contrib-status = { workspace = true }
+bazaar-contrib-agent = { workspace = true }
+bazaar-contrib-agent-command = { workspace = true }
+bazaar-contrib-audit = { workspace = true }
+bazaar-contrib-channel = { workspace = true }
+bazaar-contrib-harness = { workspace = true }
+bazaar-contrib-storage = { workspace = true }
+bazaar-contrib-sqlite = { workspace = true }
+bazaar-contrib-schema = { workspace = true }
+bazaar-contrib-legacy-node-migrations = { workspace = true }
+bazaar-contrib-messages = { workspace = true }
+bazaar-contrib-messages-node = { workspace = true }
+bazaar-contrib-collaboration = { workspace = true }
+bazaar-contrib-reminder = { workspace = true }
+bazaar-contrib-timer = { workspace = true }
+bazaar-contrib-timer-wheel = { workspace = true }
+bazaar-contrib-config = { workspace = true }
+bazaar-contrib-config-filesystem = { workspace = true }
+bazaar-contrib-config-versions = { workspace = true }
+bazaar-contrib-logging = { workspace = true }
+bazaar-contrib-manager = { workspace = true }
+bazaar-contrib-invoke = { workspace = true }
+bazaar-contrib-node-management = { workspace = true }
+bazaar-contrib-sidecar = { workspace = true }
+bazaar-contrib-sidecar-unix = { workspace = true }
+bazaar-contrib-sidecar-windows = { workspace = true }
 bcn-test-support = { path = "tests/support", editable = true }
 
+[tool.uv.workspace]
+members = ["app", "core", "contrib/*"]
+
+[tool.ruff.lint]
+extend-select = ["ASYNC"]
+
 [tool.pytest.ini_options]
-# anyio arrives with starlette and brings a pytest plugin that fights
-# pytest-asyncio over the event loop; the suite runs on pytest-asyncio alone
 addopts = "-m 'not e2e and not system' -p no:anyio"
 markers = [
     "e2e: requires a real external provider",
     "system: runs real native system services in an isolated environment",
 ]
-
-[build-system]
-requires = ["uv_build>=0.12.2,<0.13.0"]
-build-backend = "uv_build"
-
-[tool.uv.build-backend]
-module-name = ["bazaar_compute_node", "bazaar_compute_server"]

@@ -1,0 +1,13 @@
+[project]
+name = "bcn-reminder-gateway"
+version = "0.1.0"
+description = "A consumer of installed Reminder services and a TCP TestChannel"
+requires-python = ">=3.15"
+dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-messages~=0.3.0rc1", "bazaar-contrib-reminder~=0.3.0rc1", "bazaar-contrib-audit~=0.3.0rc1", "bazaar-contrib-channel~=0.3.0rc1", "bcn-agent-workbench==0.1.0", "pydantic>=2.12.0"]
+
+[project.entry-points."bazaar_compute_node.contribs"]
+reminder-gateway = "bcn_reminder_gateway:gateway"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"

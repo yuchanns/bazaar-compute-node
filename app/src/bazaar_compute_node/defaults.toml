@@ -1,0 +1,112 @@
+version = "5"
+contrib_indexes = [
+    "resource://bazaar_contrib_manager/catalog.json",
+]
+
+[[contribs]]
+package = "bazaar-contrib-agent~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "agent"
+[contribs.enabled.config]
+agents = []
+[[contribs.enabled]]
+entry = "agent-execution"
+
+[[contribs]]
+package = "bazaar-contrib-audit~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "audit"
+
+[[contribs]]
+package = "bazaar-contrib-channel~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "channel-builders"
+
+[[contribs]]
+package = "bazaar-contrib-harness~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "harness-builders"
+
+[[contribs]]
+package = "bazaar-contrib-invoke~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "commands"
+
+[[contribs]]
+package = "bazaar-contrib-node-management~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "node-management"
+
+[[contribs]]
+package = "bazaar-contrib-status~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "status"
+
+[[contribs]]
+package = "bazaar-contrib-manager~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "contrib-manager"
+
+[[contribs]]
+package = "bazaar-contrib-logging~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "logging"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "sidecar"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-unix~=0.3.0rc1; sys_platform != 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-unix"
+
+[[contribs]]
+package = "bazaar-contrib-sidecar-windows~=0.3.0rc1; sys_platform == 'win32'"
+[[contribs.enabled]]
+entry = "sidecar-windows"
+
+[[contribs]]
+package = "bazaar-contrib-storage~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "storage"
+[[contribs.enabled]]
+entry = "database"
+[contribs.enabled.config]
+backend = "sqlite"
+
+[[contribs]]
+package = "bazaar-contrib-sqlite~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "sqlite"
+
+[[contribs]]
+package = "bazaar-contrib-schema~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "schema"
+
+[[contribs]]
+package = "bazaar-contrib-legacy-node-migrations~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "legacy-node-migrations"
+
+[[contribs]]
+package = "bazaar-contrib-messages-node~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "messages-node"
+
+[[contribs]]
+package = "bazaar-contrib-collaboration~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "collaboration"
+
+[[contribs]]
+package = "bazaar-contrib-reminder~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "reminder"
+
+[[contribs]]
+package = "bazaar-contrib-timer-wheel~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "timer-wheel"

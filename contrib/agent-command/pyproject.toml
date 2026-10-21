@@ -1,0 +1,48 @@
+[project]
+name = "bazaar-contrib-agent-command"
+version = "0.3.0rc1"
+description = "Agent configuration and local conversation-review commands"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.15"
+dependencies = [
+    "bazaar-core~=0.3.0rc1",
+    "bazaar-contrib-agent~=0.3.0rc1",
+    "bazaar-contrib-channel~=0.3.0rc1",
+    "bazaar-contrib-harness~=0.3.0rc1",
+    "bazaar-contrib-config~=0.3.0rc1",
+    "bazaar-contrib-invoke~=0.3.0rc1",
+    "bazaar-contrib-sidecar~=0.3.0rc1",
+    "bazaar-contrib-collaboration~=0.3.0rc1",
+    "bazaar-contrib-messages~=0.3.0rc1",
+    "click>=8.1.0",
+    "jinja2>=3.1.6",
+    "pydantic>=2.12.0",
+]
+
+[project.entry-points."bazaar_compute_node.contribs"]
+agent-command = "bazaar_contrib_agent_command:commands"
+
+[project.entry-points."bazaar_compute_node.commands"]
+agent = "bazaar_contrib_agent_command:command_entry"
+
+[project.urls]
+Repository = "https://github.com/yuchanns/bazaar-compute-node"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:anyio"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pyright]
+extends = "../../pyrightconfig.json"
+include = ["src", "tests"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"

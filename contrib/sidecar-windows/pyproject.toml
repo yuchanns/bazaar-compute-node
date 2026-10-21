@@ -1,0 +1,35 @@
+[project]
+name = "bazaar-contrib-sidecar-windows"
+version = "0.3.0rc1"
+description = "Native Windows transport for Bazaar sidecar"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.15"
+dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-sidecar~=0.3.0rc1"]
+
+[project.entry-points."bazaar_compute_node.contribs"]
+sidecar-windows = "bazaar_contrib_sidecar_windows:sidecar"
+
+[project.urls]
+Repository = "https://github.com/yuchanns/bazaar-compute-node"
+
+[build-system]
+requires = ["uv_build>=0.13.0,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.bcn.ci]
+platforms = ["windows"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:anyio"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.pyright]
+extends = "../../pyrightconfig.json"
+include = ["src", "tests"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"
