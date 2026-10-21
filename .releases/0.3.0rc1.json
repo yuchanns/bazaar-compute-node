@@ -1,0 +1,448 @@
+{
+  "version": "0.3.0rc1",
+  "branch": "0.3",
+  "source_commit": "481344f2238dc68afeba90e3be14bc8041704285",
+  "packages": [
+    {
+      "name": "bazaar-core",
+      "path": "core",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "packaging>=25.0",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": "core/tests/package_smoke.py"
+    },
+    {
+      "name": "bazaar-contrib-audit",
+      "path": "contrib/audit",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-config",
+      "path": "contrib/config",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "packaging>=26.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-harness",
+      "path": "contrib/harness",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-invoke",
+      "path": "contrib/invoke",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "click>=8.1.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-logging",
+      "path": "contrib/logging",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "pydantic>=2.12.0",
+        "concurrent-log-handler>=0.9.30,<1"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-sidecar",
+      "path": "contrib/sidecar",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-status",
+      "path": "contrib/status",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": "contrib/status/tests/package_smoke.py"
+    },
+    {
+      "name": "bazaar-contrib-storage",
+      "path": "contrib/storage",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-timer",
+      "path": "contrib/timer",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-config-filesystem",
+      "path": "contrib/config-filesystem",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-contrib-config~=0.3.0rc1",
+        "filelock>=3.20.0",
+        "tomli-w>=1.2.0"
+      ],
+      "platforms": [
+        "linux",
+        "windows"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-config-versions",
+      "path": "contrib/config-versions",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-contrib-config~=0.3.0rc1"
+      ],
+      "platforms": [
+        "linux",
+        "windows"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-node-management",
+      "path": "contrib/node-management",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-config~=0.3.0rc1",
+        "bazaar-contrib-invoke~=0.3.0rc1",
+        "click>=8.1.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-manager",
+      "path": "contrib/manager",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-contrib-config~=0.3.0rc1",
+        "bazaar-contrib-invoke~=0.3.0rc1",
+        "bazaar-contrib-sidecar~=0.3.0rc1",
+        "filelock>=3.16.0",
+        "jinja2>=3.1.6",
+        "packaging>=25.0",
+        "tomli-w>=1.2.0"
+      ],
+      "platforms": [
+        "linux",
+        "windows"
+      ],
+      "smoke": "contrib/manager/tests/package_smoke.py"
+    },
+    {
+      "name": "bazaar-contrib-sidecar-unix",
+      "path": "contrib/sidecar-unix",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-sidecar~=0.3.0rc1"
+      ],
+      "platforms": [
+        "linux",
+        "macos"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-sidecar-windows",
+      "path": "contrib/sidecar-windows",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-sidecar~=0.3.0rc1"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-schema",
+      "path": "contrib/schema",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1",
+        "packaging>=25.0",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-sqlite",
+      "path": "contrib/sqlite",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1",
+        "aiosqlite>=0.20.0",
+        "pydantic>=2.12.0",
+        "jinja2>=3.1.6"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-channel",
+      "path": "contrib/channel",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-harness~=0.3.0rc1",
+        "bazaar-contrib-timer~=0.3.0rc1",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-timer-wheel",
+      "path": "contrib/timer-wheel",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-timer~=0.3.0rc1",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": "contrib/timer-wheel/tests/package_smoke.py"
+    },
+    {
+      "name": "bazaar-contrib-legacy-node-migrations",
+      "path": "contrib/legacy-node-migrations",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1",
+        "bazaar-contrib-schema~=0.3.0rc1"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-messages",
+      "path": "contrib/messages",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-channel~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-collaboration",
+      "path": "contrib/collaboration",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-contrib-legacy-node-migrations~=0.3.0rc1",
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-schema~=0.3.0rc1",
+        "bazaar-contrib-audit~=0.3.0rc1",
+        "bazaar-contrib-channel~=0.3.0rc1",
+        "bazaar-contrib-messages~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1",
+        "bazaar-contrib-timer~=0.3.0rc1",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-messages-node",
+      "path": "contrib/messages-node",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-schema~=0.3.0rc1",
+        "bazaar-contrib-messages~=0.3.0rc1",
+        "bazaar-contrib-audit~=0.3.0rc1",
+        "bazaar-contrib-channel~=0.3.0rc1",
+        "bazaar-contrib-timer~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1",
+        "bazaar-contrib-legacy-node-migrations~=0.3.0rc1",
+        "bazaar-contrib-invoke~=0.3.0rc1",
+        "bazaar-contrib-sidecar~=0.3.0rc1",
+        "click>=8.1.0",
+        "jinja2>=3.1.6",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-reminder",
+      "path": "contrib/reminder",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-messages~=0.3.0rc1",
+        "bazaar-contrib-audit~=0.3.0rc1",
+        "bazaar-contrib-timer~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1",
+        "bazaar-contrib-legacy-node-migrations~=0.3.0rc1",
+        "bazaar-contrib-schema~=0.3.0rc1",
+        "bazaar-contrib-invoke~=0.3.0rc1",
+        "bazaar-contrib-sidecar~=0.3.0rc1",
+        "click>=8.1.0",
+        "jinja2>=3.1.6",
+        "pydantic>=2.12.0",
+        "tzdata>=2025.2; sys_platform == 'win32'"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-agent",
+      "path": "contrib/agent",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-contrib-messages~=0.3.0rc1",
+        "bazaar-contrib-collaboration~=0.3.0rc1",
+        "bazaar-contrib-reminder~=0.3.0rc1",
+        "bazaar-contrib-timer~=0.3.0rc1",
+        "bazaar-contrib-legacy-node-migrations~=0.3.0rc1",
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-storage~=0.3.0rc1",
+        "bazaar-contrib-schema~=0.3.0rc1",
+        "bazaar-contrib-audit~=0.3.0rc1",
+        "bazaar-contrib-channel~=0.3.0rc1",
+        "bazaar-contrib-harness~=0.3.0rc1",
+        "bazaar-contrib-invoke~=0.3.0rc1",
+        "click>=8.1.0",
+        "jinja2>=3.1.6",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux",
+        "windows"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-contrib-agent-command",
+      "path": "contrib/agent-command",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-agent~=0.3.0rc1",
+        "bazaar-contrib-channel~=0.3.0rc1",
+        "bazaar-contrib-harness~=0.3.0rc1",
+        "bazaar-contrib-config~=0.3.0rc1",
+        "bazaar-contrib-invoke~=0.3.0rc1",
+        "bazaar-contrib-sidecar~=0.3.0rc1",
+        "bazaar-contrib-collaboration~=0.3.0rc1",
+        "bazaar-contrib-messages~=0.3.0rc1",
+        "click>=8.1.0",
+        "jinja2>=3.1.6",
+        "pydantic>=2.12.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": null
+    },
+    {
+      "name": "bazaar-compute-node",
+      "path": "app",
+      "license": "Apache-2.0",
+      "dependencies": [
+        "bazaar-core~=0.3.0rc1",
+        "bazaar-contrib-config~=0.3.0rc1",
+        "bazaar-contrib-config-filesystem~=0.3.0rc1",
+        "bazaar-contrib-config-versions~=0.3.0rc1",
+        "bazaar-contrib-manager~=0.3.0rc1",
+        "bazaar-contrib-invoke~=0.3.0rc1",
+        "click>=8.1.0"
+      ],
+      "platforms": [
+        "linux"
+      ],
+      "smoke": "app/tests/package_smoke.py"
+    }
+  ]
+}
