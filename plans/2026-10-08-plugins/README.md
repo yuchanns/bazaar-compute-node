@@ -96,6 +96,7 @@ Codex、Claude Code、Telegram、Lark、WeCom 是用户选择安装的具体 pro
 | [framework.md](framework.md) | 首个特性分支：框架、默认节点基础、模块与 agent 配置管理、串行 Tasks 和验收 |
 | [roadmap.md](roadmap.md) | 全部能力的模块归属、替换依赖与顺序、阶段验收、0.3 发行清单及发布顺序 |
 | [bazaar.md](bazaar.md) | contrib 市场页面：官方与额外模块索引、包安装到入口配置的流程、管理状态和串行 Tasks |
+| [workspace 发版](../2026-10-21-workspace-release/plan.md) | 可选择分支的统一版本、候选产物验收与批量发布 |
 
 后续特性分支的详细计划继续放入本目录，按能力命名，并从本入口与路线图关联。
 公共版本目标、分支及仓库组织由本文件维护，阶段实现细节由各阶段文件维护。
@@ -333,6 +334,8 @@ server／web 保持可选安装；BCS 组合直接读取自己的 ~/.bcs/config.
 PR 的规划 job 读取 PR base 与 head 的 merge-base 变更列表，再把受影响包交给下游动态矩阵。
 包集合及依赖直接来自 uv workspace metadata 的 members 和 resolution，
 CI 固定 uv `0.13.0` 并启用 `workspace-metadata` preview；使用不透明 node id 遍历依赖图。
+PR 与 Release 共用 `.github/actions/setup`、`checks` 和 `test`，统一环境准备、逐包静态检查、
+普通测试、独立 system 测试及 wheel／sdist 验收；workflow 传入各自规划的包集合。
 文件归属采用最深的本地包目录，新增、删除与移动文件都参与判断；受影响包及依赖它的消费者进入矩阵，
 开发依赖和 extras 的变更同样影响对应消费者。根 workspace 配置、共享锁、许可证与 CI 工具变更验证全部成员。
 变更分析包含各平台条件依赖，产物安装使用当前平台的发行依赖闭包。
@@ -359,7 +362,11 @@ Release workflow 保留单个 version 输入（X.Y.Z 或 X.Y.ZrcN）。`scripts/
 
 工具用一个目标版本同步 BCN 仓库的所有公开成员的 project.version 及所需资源版本引用，保留各包仍适用的依赖下限与兼容范围，更新 uv.lock，
 复核共同版本、依赖闭包和运行入口唯一性。变更形成一次已验证签名的 Release v<版本> 提交，
-提交使用准备时的 main HEAD 作为预期值；源码推进时重新准备，所有构建与后续发布固定使用该发行提交。
+提交使用准备时所选发行分支的 HEAD 作为预期值；源码推进时重新准备，所有构建与后续发布固定使用该发行提交。
+Release 已在默认 main 登记，运行时使用 GitHub 自带的 Branch 选择；版本仍只输入一次。
+正式版必须从 `main` 运行，RC 可以使用其他发行分支。
+当前基础组合先从 `0.3` 发布 `0.3.0rc1`，为后续独立 provider 的安装和测试提供真实包源。
+工具及流程见 [workspace 发版计划](../2026-10-21-workspace-release/plan.md)。
 
 独立可选仓库按其兼容范围完成自己的构建与 CI，集成清单固定所用提交、版本和产物。
 BCN CI 逐包构建独立 wheel／sdist，以必要包产物及固定的独立可选产物完成干净安装和三平台组合验收，

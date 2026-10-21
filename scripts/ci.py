@@ -76,8 +76,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     plan = commands.add_parser("plan")
-    plan.add_argument("--base", required=True)
-    plan.add_argument("--head", required=True)
+    plan.add_argument("--base")
+    plan.add_argument("--head")
+    plan.add_argument("--all-packages", action="store_true")
     plan.add_argument("--github-output", type=Path)
     test = commands.add_parser("test")
     test.add_argument("--system", action="store_true")
@@ -92,7 +93,12 @@ def main() -> None:
 
     metadata = load_metadata(Path.cwd())
     if args.command == "plan":
-        members = metadata.affected(args.base, args.head)
+        if args.all_packages:
+            members = metadata.members
+        else:
+            if not args.base or not args.head:
+                parser.error("plan requires --all-packages or both --base and --head")
+            members = metadata.affected(args.base, args.head)
         platforms = {
             "linux": "ubuntu-latest",
             "macos": "macos-latest",

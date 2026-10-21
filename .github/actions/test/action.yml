@@ -1,0 +1,37 @@
+name: Test package
+description: Run package tests, system service tests and distribution verification
+
+inputs:
+  package:
+    description: Workspace package name
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Run package tests
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+      run: uv run --no-sync scripts/ci.py test --package "$PACKAGE"
+
+    - name: Prepare the Linux user service manager
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo loginctl enable-linger "$(id -un)"
+        sudo systemctl start "user@$(id -u).service"
+        echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >>"$GITHUB_ENV"
+        echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >>"$GITHUB_ENV"
+
+    - name: Run system service tests
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+      run: uv run --no-sync scripts/ci.py test --package "$PACKAGE" --system
+
+    - name: Build and verify distributions
+      shell: bash
+      env:
+        PACKAGE: ${{ inputs.package }}
+      run: uv run --no-sync scripts/ci.py package --package "$PACKAGE"
