@@ -2155,3 +2155,7 @@ app 的普通 Python 入口提供启动输入和默认资源，core 的运行接
 
 所有测试使用测试专用配置、临时数据和隔离进程。真实外部 provider 使用现有 TestChannel 控制面；
 三平台 native service 测试使用独立 CI runner。测试观察有效业务流程与资源行为，使用真实实现和构建产物。
+
+独立 provider 的 CI 直接引用 BCN 的 setup、checks 和 test Actions，并保持自身的项目与锁文件。
+公共 Actions 从 github.action_path 定位随 Action 发行的检查脚本，在调用项目中发现包及正式依赖；
+统一完成 Ruff、Pyright LSP、测试分组及独立 wheel／sdist 安装验证。真实模型的运行环境与 TestChannel 验收由 provider 配置。

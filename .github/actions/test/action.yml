@@ -13,7 +13,8 @@ runs:
       shell: bash
       env:
         PACKAGE: ${{ inputs.package }}
-      run: uv run --no-sync scripts/ci.py test --package "$PACKAGE"
+        ACTION_PATH: ${{ github.action_path }}
+      run: uv run --no-sync python "$ACTION_PATH/../../../scripts/ci.py" test --package "$PACKAGE"
 
     - name: Prepare the Linux user service manager
       if: runner.os == 'Linux'
@@ -28,10 +29,12 @@ runs:
       shell: bash
       env:
         PACKAGE: ${{ inputs.package }}
-      run: uv run --no-sync scripts/ci.py test --package "$PACKAGE" --system
+        ACTION_PATH: ${{ github.action_path }}
+      run: uv run --no-sync python "$ACTION_PATH/../../../scripts/ci.py" test --package "$PACKAGE" --system
 
     - name: Build and verify distributions
       shell: bash
       env:
         PACKAGE: ${{ inputs.package }}
-      run: uv run --no-sync scripts/ci.py package --package "$PACKAGE"
+        ACTION_PATH: ${{ github.action_path }}
+      run: uv run --no-sync python "$ACTION_PATH/../../../scripts/ci.py" package --package "$PACKAGE"

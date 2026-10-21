@@ -13,10 +13,11 @@ runs:
       shell: bash
       env:
         PACKAGES: ${{ inputs.packages }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         read -r -a packages <<<"$PACKAGES"
         for package in "${packages[@]}"; do
           echo "::group::$package"
-          uv run --no-sync scripts/ci.py check --package "$package"
+          uv run --no-sync python "$ACTION_PATH/../../../scripts/ci.py" check --package "$package"
           echo "::endgroup::"
         done
