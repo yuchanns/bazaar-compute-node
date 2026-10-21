@@ -14,7 +14,9 @@ from ._format import (
 
 
 @click.group(help="Reminder operations")
-def reminder() -> None: ...
+@click.pass_context
+def reminder(ctx: click.Context) -> None:
+    ctx.obj = ReminderClient(ctx.obj.request)
 
 
 @reminder.command(

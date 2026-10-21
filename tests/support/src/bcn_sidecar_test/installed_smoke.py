@@ -111,6 +111,7 @@ async def exercise(directory: Path, transport: str, control: str):
         "version": "5",
         "contribs": [
             {"enabled": [{"entry": "commands"}]},
+            {"enabled": [{"entry": "timer-wheel"}]},
             *entries,
             {"enabled": [{"entry": "sidecar-controls"}]},
             {
@@ -163,6 +164,27 @@ async def exercise(directory: Path, transport: str, control: str):
             text = await asyncio.to_thread(journal.read_text)
             assert "direct cross-process service" in text
             assert "cross-process note 🌙" in text and "x" * 300_000 in text
+            timer = await remote.call("accept", Symbol("bazaar_contrib_timer:TIMER"))
+            for timeout in (None, 0.2):
+                pending = await timer.call("create", 60_000)
+                sibling = await timer.call("create", 50)
+                waiting = asyncio.create_task(
+                    clients[0].request(
+                        Request(operation="call", target=pending.id, method="wait"),
+                        timeout=timeout,
+                    )
+                )
+                await sibling.call("wait")
+                if timeout is None:
+                    waiting.cancel()
+                result = await asyncio.gather(waiting, return_exceptions=True)
+                assert isinstance(result[0], (asyncio.CancelledError, TimeoutError))
+                while await pending.get("active"):
+                    await remote.get("name")
+                assert await timer.get("now_ms") < await pending.get("deadline")
+                await pending.release()
+                await sibling.release()
+            await timer.release()
             message = "x" * 3_000_000 + "完整的长消息 🌙"
             configuration = await remote.call(
                 "accept", Symbol("bazaar_contrib_config:CONFIGURATION")

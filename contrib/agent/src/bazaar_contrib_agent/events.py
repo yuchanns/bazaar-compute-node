@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Literal
 lazy import logging
 
 from bazaar_contrib_audit import Audit, AuditContext
@@ -16,8 +15,10 @@ from bazaar_contrib_channel import (
 from bazaar_contrib_harness import (
     ApprovalRequest,
     ApprovalResult,
+    ApprovalScope,
     HarnessOutput,
 )
+from bazaar_contrib_messages import Actor, Agent
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ class ApprovalRoute:
     sender_id: str
     audit: Audit
     context: AuditContext
-    mode: Literal["session", "dangerous_individual"] = "session"
+    actor: Actor
     sender_kind: str = "human"
 
     async def request_approval(
@@ -70,10 +71,13 @@ class ApprovalRoute:
             result = ApprovalResult(
                 request_id=request.request_id, decision="rejected", reason=reason
             )
-        elif self.mode == "dangerous_individual":
+        elif isinstance(self.actor, Agent):
             result = ApprovalResult(
                 request_id=request.request_id,
                 decision="approved",
+                scope=next(
+                    scope for scope in ApprovalScope if scope in request.allowed_scopes
+                ),
                 reason="This Agent answers for every conversation and allows tool use without asking.",
             )
         elif self.sender_kind != "human" or not self.sender_id:
@@ -90,26 +94,48 @@ class ApprovalRoute:
             result = await self.channel.request_approval(
                 channel_request, timeout=timeout
             )
-            if result.request_id != request.request_id:
-                reason = "The approval decision could not be matched to this operation."
-                logger.warning(
-                    "approval result request_id mismatch: "
-                    "expected request_id=%r, received request_id=%r; "
-                    "session_id=%r, turn_id=%r; "
-                    "agent_id=%r, channel=%r, harness=%r, target_kind=%r, thread_id=%r",
-                    request.request_id,
-                    result.request_id,
-                    self.session_id,
-                    self.turn_id,
-                    self.context.agent_id,
-                    self.context.channel,
-                    self.context.harness,
-                    self.target.kind,
-                    self.target.thread_id,
-                )
-                result = ApprovalResult(
-                    request_id=request.request_id, decision="rejected", reason=reason
-                )
+        if result.request_id != request.request_id:
+            reason = "The approval decision could not be matched to this operation."
+            logger.warning(
+                "approval result request_id mismatch: "
+                "expected request_id=%r, received request_id=%r; "
+                "session_id=%r, turn_id=%r; "
+                "agent_id=%r, channel=%r, harness=%r, target_kind=%r, thread_id=%r",
+                request.request_id,
+                result.request_id,
+                self.session_id,
+                self.turn_id,
+                self.context.agent_id,
+                self.context.channel,
+                self.context.harness,
+                self.target.kind,
+                self.target.thread_id,
+            )
+            result = ApprovalResult(
+                request_id=request.request_id, decision="rejected", reason=reason
+            )
+        elif (
+            result.decision == "approved" and result.scope not in request.allowed_scopes
+        ):
+            reason = "The approval scope is not supported for this operation."
+            logger.warning(
+                "approval result scope mismatch: request_id=%r; "
+                "allowed_scopes=%r, received scope=%r; session_id=%r, turn_id=%r; "
+                "agent_id=%r, channel=%r, harness=%r, target_kind=%r, thread_id=%r",
+                request.request_id,
+                request.allowed_scopes,
+                result.scope,
+                self.session_id,
+                self.turn_id,
+                self.context.agent_id,
+                self.context.channel,
+                self.context.harness,
+                self.target.kind,
+                self.target.thread_id,
+            )
+            result = ApprovalResult(
+                request_id=request.request_id, decision="rejected", reason=reason
+            )
         await self.audit.publish(
             "approval.decided",
             context=self.context,

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from functools import cache
-from typing import Annotated, Literal
+from typing import Annotated
 
+from bazaar_contrib_messages import Mode
 from pydantic import BaseModel, ConfigDict, Field
 lazy from jinja2 import Environment, PackageLoader, StrictUndefined, Template
 
@@ -30,7 +31,7 @@ class DeveloperInstructionContext(BaseModel):
     runtime_session_id: Line
     runtime: Line
     workspace: Line
-    mode: Literal["session", "dangerous_individual"] = "session"
+    mode: Mode = Mode.SESSION
 
     def render(self) -> str:
         return template().render(self.model_dump())

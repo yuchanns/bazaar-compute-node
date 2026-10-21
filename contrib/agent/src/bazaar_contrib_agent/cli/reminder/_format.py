@@ -3,18 +3,23 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import click
 
-from ..reminder import format_utc_timestamp
 from ..rendering import TextTemplate
 from ._client import BccCommandError
 
-_REMINDER_SCHEDULE = TextTemplate.from_resource("bcc/reminder_schedule.tpl")
-_REMINDER_LIST = TextTemplate.from_resource("bcc/reminder_list.tpl")
-_REMINDER_MUTATION = TextTemplate.from_resource("bcc/reminder_mutation.tpl")
-_ERROR = TextTemplate.from_resource("bcc/error.tpl")
+_REMINDER_SCHEDULE = TextTemplate.from_resource("bcc/reminder/reminder_schedule.tpl")
+_REMINDER_LIST = TextTemplate.from_resource("bcc/reminder/reminder_list.tpl")
+_REMINDER_MUTATION = TextTemplate.from_resource("bcc/reminder/reminder_mutation.tpl")
+_ERROR = TextTemplate.from_resource("bcc/reminder/error.tpl")
+
+
+def format_utc_timestamp(timestamp_ms: int) -> str:
+    value = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=timestamp_ms)
+    return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def echo(text: str) -> None:

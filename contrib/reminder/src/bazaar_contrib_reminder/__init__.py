@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from contextlib import asynccontextmanager
-from copy import copy
 
 from bazaar_contrib_audit import AUDIT
-from bazaar_contrib_invoke import COMMANDS, CommandEntry
 from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
 from bazaar_contrib_messages import MESSAGES
 from bazaar_contrib_schema import SCHEMA
 from bazaar_contrib_storage import DB
 from bazaar_contrib_timer import TIMER
-from bazaar_core import Context, Contrib, ContribSpec, ServiceKey
-lazy from bazaar_contrib_sidecar import CLIENT
+from bazaar_core import Context, Contrib, ServiceKey
 
 from .commands import ReminderCommandFailure, ReminderCommands
 from .models import OwnedReminder, Reminder, ReminderOwner, ReminderState
@@ -34,8 +29,6 @@ from .reminder import (
 from .scheduler import ReminderScheduler, resolve_reminder_anchor
 from .schema import MODULE
 from .service import Reminders
-lazy from .cli._client import ReminderClient
-lazy from .cli.reminder import reminder as reminder_group
 
 __all__ = [
     "REMINDER",
@@ -57,9 +50,7 @@ __all__ = [
     "ReminderUpdateRequest",
     "ReminderUpdateResult",
     "Reminders",
-    "commands",
     "reminder",
-    "reminder_entry",
     "resolve_reminder_anchor",
 ]
 
@@ -82,36 +73,8 @@ async def lifespan(ctx: Context):
             await service.stop()
 
 
-@asynccontextmanager
-async def cli_lifespan(ctx: Context):
-    client = ctx.accept(CLIENT)
-    timeout = client.timeout
-    client.timeout = None
-    try:
-        group = copy(reminder_group)
-        group.context_settings = {
-            **group.context_settings,
-            "obj": ReminderClient(client.context),
-        }
-        with ctx.accept(COMMANDS).register(group):
-            yield
-    finally:
-        client.timeout = timeout
-
-
 reminder = Contrib(
     accepts=[SCHEMA, LEGACY_NODE_MIGRATIONS, DB, MESSAGES, TIMER, AUDIT],
     offers=[REMINDER],
     lifespan=lifespan,
-)
-commands = Contrib(accepts=[CLIENT, COMMANDS], lifespan=cli_lifespan)
-reminder_entry = CommandEntry(
-    contrib="reminder-cli",
-    help="Reminder operations",
-    dependencies=(
-        ContribSpec(
-            contrib="sidecar-windows" if sys.platform == "win32" else "sidecar-unix",
-            config={"endpoint": os.environ.get("BCN_ENDPOINT")},
-        ),
-    ),
 )

@@ -34,3 +34,7 @@ timeout = 30
 ```
 
 Consumers accept `CLIENT`; handlers are served while the owning contrib is running.
+Calls can run concurrently on one client. Stream transports pair each response
+with its request ID and dispatch server calls concurrently within the connection.
+`client.request(request, timeout=None)` lets the business operation own its wait
+budget; omitted timeouts use the client's configured default.

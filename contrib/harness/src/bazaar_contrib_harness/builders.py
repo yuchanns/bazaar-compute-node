@@ -1,17 +1,22 @@
 """Declarations and scoped bindings shared by harness providers and agents."""
 
+# Query budgets are supplied by the caller of the public contract.
+# ruff: noqa: ASYNC109
+
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager
 from functools import cache
+from pathlib import Path
 from typing import Any, ClassVar
 
 from bazaar_core import Composition, Context, Contrib, ContribEntry, ServiceKey
 from pydantic import BaseModel, ConfigDict
 
 from .contracts import Harness
-from .models import HarnessInput
+from .models import HarnessInput, HarnessInspection
 
 HARNESS = ServiceKey[Harness]("harness.instance")
 HARNESS_INPUT = ServiceKey[HarnessInput]("harness.input")
@@ -42,6 +47,10 @@ class HarnessBuilder(BaseModel):
     def capabilities(self) -> tuple[str, ...]:
         return self.definition.capabilities
 
+    async def inspect(self, workspace: Path, *, timeout: float) -> HarnessInspection:
+        """Query the provider without creating an Agent or a Harness session."""
+        return await self.definition.inspect(workspace, timeout=timeout)
+
     def compose(self, values: dict[str, Any], input: HarnessInput) -> Composition:
         config = self.entity_model.model_validate(values)
         return Composition(
@@ -60,12 +69,17 @@ class HarnessBuilder(BaseModel):
         )
 
 
-class HarnessBuilderConfig(BaseModel):
+class HarnessBuilderConfig(BaseModel, ABC):
     model_config = ConfigDict(extra="forbid", frozen=True)
     kind: ClassVar[str]
     entity_model: ClassVar[type[BaseModel]]
     entry: ClassVar[Contrib[Any]]
     capabilities: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    @abstractmethod
+    async def inspect(cls, workspace: Path, *, timeout: float) -> HarnessInspection:
+        """Report availability, version, models and workspace skills."""
 
     @classmethod
     def builder(cls) -> HarnessBuilder:

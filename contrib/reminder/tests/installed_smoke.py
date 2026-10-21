@@ -17,8 +17,17 @@ from typing import Any
 from uuid import uuid7
 
 import tomli_w
+from bazaar_compute_node.boot import build
+from bazaar_compute_node.boot import node as application
+from bazaar_contrib_agent.tool import Tool
+from bazaar_contrib_config import CONFIGURATION, ConfigDocument, Configuration
 from bazaar_contrib_sidecar import CLIENT, Client, Construct, Remote, Symbol
-from bazaar_core import Context, Contrib, ContribEntry, ContribHub, ContribSpec, load
+from bazaar_core import (
+    Composition,
+    Context,
+    Contrib,
+    ContribEntry,
+)
 
 from bazaar_contrib_reminder.reminder import format_utc_timestamp
 
@@ -207,7 +216,6 @@ async def exercise(directory: Path):
     )
     os.environ.update(
         BCN_HOME=str(directory),
-        BCN_ENDPOINT=endpoint,
         UV_TOOL_DIR=str(directory / "tools"),
         UV_TOOL_BIN_DIR=str(directory / "bin"),
         UV_CACHE_DIR=str(directory / "cache"),
@@ -244,27 +252,32 @@ async def exercise(directory: Path):
     @asynccontextmanager
     async def control():
         clients: list[Client] = []
+        configurations: list[Configuration] = []
 
         @asynccontextmanager
         async def consumer(ctx: Context):
             clients.append(ctx.accept(CLIENT))
+            configurations.append(ctx.accept(CONFIGURATION))
             yield
 
-        composition = await asyncio.to_thread(
-            load, (ContribSpec(contrib=native, config={"endpoint": endpoint}),)
-        )
-        composition = composition.model_copy(
-            update={
-                "entries": (
-                    *composition.entries,
-                    ContribEntry(
-                        name="control",
-                        definition=Contrib(accepts=[CLIENT], lifespan=consumer),
-                    ),
-                )
-            }
-        )
-        async with ContribHub() as hub, hub.enable(composition):
+        def select(document: ConfigDocument) -> Composition:
+            composition = build(document)
+            entry = ContribEntry(
+                name="control",
+                definition=Contrib(accepts=[CLIENT, CONFIGURATION], lifespan=consumer),
+            )
+            return composition.model_copy(
+                update={
+                    "entries": (*composition.entries, entry),
+                    "roots": (entry.name,),
+                }
+            )
+
+        async with (
+            application(configer_options=(str(config),), start=select),
+            Tool(configurations[0]) as tool,
+        ):
+            os.environ["BCN_TOOL_CONFIG"] = str(tool.path)
             reminders: Remote = await clients[0].context.call(
                 "accept", Symbol("bazaar_contrib_reminder:REMINDER")
             )

@@ -11,8 +11,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import tomli_w
-from bazaar_contrib_sidecar.streams import UnlimitedLineReader
-from bazaar_contrib_sidecar.wire import RESPONSE, Atom, Request, Result
+from bazaar_contrib_sidecar.streams import Call, Reply, UnlimitedLineReader
+from bazaar_contrib_sidecar.wire import Atom, Request, Result
 from installed_smoke import command, node
 
 if sys.platform == "win32":
@@ -105,14 +105,19 @@ async def exercise(directory: Path):
 
         reader, writer = await connect(endpoint)
         try:
-            request = Request(operation="get", method="name").model_dump_json().encode()
-            writer.write(request[:5])
+            requests = [
+                Call(request=Request(operation="get", method="name"))
+                .model_dump_json()
+                .encode()
+                for _ in range(2)
+            ]
+            writer.write(requests[0][:5])
             await writer.drain()
-            writer.write(request[5:] + b"\n" + request + b"\n")
+            writer.write(requests[0][5:] + b"\n" + requests[1] + b"\n")
             await writer.drain()
             lines = UnlimitedLineReader(reader)
             for _ in range(2):
-                response = RESPONSE.validate_json(await lines.readline())
+                response = Reply.model_validate_json(await lines.readline()).response
                 assert isinstance(response, Result) and isinstance(response.value, Atom)
                 assert "sidecar" in str(response.value.value)
         finally:

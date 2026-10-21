@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from functools import wraps
 from typing import Any, cast
 
 import click
-from bazaar_contrib_sidecar import Remote, Symbol
 
 
 class BccCommandError(RuntimeError):
@@ -32,8 +31,11 @@ def _environment(name: str, code: str) -> str:
 
 
 class MessageClient:
-    def __init__(self, remote: Remote):
-        self.remote = remote
+    def __init__(
+        self,
+        send: Callable[[str, Mapping[str, object]], Awaitable[Mapping[str, object]]],
+    ):
+        self.send = send
 
     async def request(
         self, resource: str, command: str, payload: Mapping[str, object] = {}
@@ -53,13 +55,7 @@ class MessageClient:
             ),
             **payload,
         }
-        service = cast(
-            Remote,
-            await self.remote.call(
-                "accept", Symbol("bazaar_contrib_messages:MESSAGES")
-            ),
-        )
-        response = cast(Mapping[str, object], await service.call("request", request))
+        response = await self.send("bazaar_contrib_messages:MESSAGES", request)
         if response.get("ok") is not True:
             raise BccCommandError(
                 str(response.get("error", "command failed")),

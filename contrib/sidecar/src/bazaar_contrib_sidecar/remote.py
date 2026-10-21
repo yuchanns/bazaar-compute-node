@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from enum import Enum, auto
+from types import EllipsisType
 lazy import asyncio
 lazy from collections.abc import Awaitable, Callable
 lazy from typing import Any
@@ -77,7 +78,6 @@ class Client:
         self.send = send
         self.close = close
         self.timeout = timeout
-        self._lock = asyncio.Lock()
         self._state = _State.OPEN
 
     def reference(self, value: object) -> Reference:
@@ -85,19 +85,19 @@ class Client:
             raise TypeError("use a Symbol, Construct, or object from this connection")
         return Reference(id=value.id)
 
-    async def request(self, request: Request) -> Any:
-        async with self._lock:
-            if self._state is _State.CLOSED:
-                raise ConnectionError("the sidecar connection has closed")
-            try:
-                async with asyncio.timeout(self.timeout):
-                    response = await self.send(request)
-            except BaseException:
-                await self.aclose()
-                raise
-            if isinstance(response, Failure):
-                raise RemoteError(response.type, response.message)
-            return decode(response.value, lambda value: Remote(self, value.id))
+    async def request(
+        self,
+        request: Request,
+        *,
+        timeout: float | None | EllipsisType = ...,  # noqa: ASYNC109 - Override one RPC budget without mutating the shared client.
+    ) -> Any:
+        if self._state is _State.CLOSED:
+            raise ConnectionError("the sidecar connection has closed")
+        async with asyncio.timeout(self.timeout if timeout is ... else timeout):
+            response = await self.send(request)
+        if isinstance(response, Failure):
+            raise RemoteError(response.type, response.message)
+        return decode(response.value, lambda value: Remote(self, value.id))
 
     async def aclose(self) -> None:
         self._state = _State.CLOSED

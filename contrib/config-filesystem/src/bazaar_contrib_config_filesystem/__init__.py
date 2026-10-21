@@ -14,7 +14,7 @@ lazy from uuid import uuid7
 
 from bazaar_contrib_config import CONFIG_STORE
 from bazaar_core import Contrib
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 lazy import tomli_w
 lazy from bazaar_contrib_config import (
     ConfigCommitUnknown,
@@ -31,7 +31,18 @@ __all__ = ["FileConfig", "FileConfigStore", "filesystem"]
 
 class FileConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    options: tuple[Path, ...] = ()
+    options: tuple[Path, ...] = Field(default=(), validate_default=True)
+
+    @field_validator("options")
+    @classmethod
+    def absolute_paths(cls, options: tuple[Path, ...]) -> tuple[Path, ...]:
+        if not options:
+            options = (
+                Path(os.environ.get("BCN_HOME") or Path.home())
+                / ".bcn"
+                / "config.toml",
+            )
+        return tuple(path.expanduser().absolute() for path in options)
 
 
 class FileConfigStore:
@@ -147,12 +158,7 @@ class FileConfigStore:
 
 @asynccontextmanager
 async def lifespan(ctx: Context, config: FileConfig):
-    path = (
-        config.options[-1]
-        if config.options
-        else Path(os.environ.get("BCN_HOME") or Path.home()) / ".bcn" / "config.toml"
-    )
-    async with FileConfigStore(path) as store:
+    async with FileConfigStore(config.options[-1]) as store:
         ctx.offer(CONFIG_STORE, store)
         yield
 

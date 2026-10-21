@@ -17,6 +17,7 @@ from time import time_ns
 from typing import Any, ClassVar, Literal, cast
 from uuid import NAMESPACE_URL, uuid5, uuid7
 
+import tomli_w
 from bazaar_contrib_channel import (
     CHANNEL,
     CHANNEL_BUILDERS,
@@ -41,6 +42,12 @@ from bazaar_contrib_channel import (
     SenderIdentity,
     channel_builder_key,
 )
+from bazaar_contrib_config import (
+    ConfigDocument,
+    ConfigurationEnvironment,
+    EnabledContrib,
+    configuration,
+)
 from bazaar_contrib_harness import (
     HARNESS,
     HARNESS_BUILDERS,
@@ -49,9 +56,11 @@ from bazaar_contrib_harness import (
     ApprovalRequest,
     ApprovalResult,
     HarnessBuilderConfig,
-    HarnessDescription,
     HarnessExpire,
+    HarnessFailure,
+    HarnessFailureReason,
     HarnessInput,
+    HarnessInspection,
     HarnessOutput,
     HarnessSession,
     HarnessSessionReconciliation,
@@ -63,8 +72,56 @@ from bazaar_contrib_harness import (
     SessionInput,
     harness_builder_key,
 )
-from bazaar_core import Context, Contrib
+from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribSpec, load
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+
+
+def build(document: ConfigDocument) -> Composition:
+    return load(
+        [
+            ContribSpec(contrib=entry.entry, config=entry.config)
+            for package in document.contribs
+            if package.applies
+            for entry in package.enabled
+        ]
+    )
+
+
+async def configured(path: Path, composition: Composition) -> Composition:
+    """Use a real configuration carrier for independent Agent tool processes."""
+    document = {
+        "version": "5",
+        "contribs": [
+            {"enabled": [{"entry": entry.name, "config": dict(entry.config)}]}
+            for entry in composition.entries
+        ],
+    }
+    await asyncio.to_thread(path.write_text, tomli_w.dumps(document), encoding="utf-8")
+    bootstrap = await asyncio.to_thread(
+        load,
+        [
+            ContribSpec(contrib="config-filesystem", config={"options": [str(path)]}),
+            *(ContribSpec(contrib=f"config-v{number}") for number in range(1, 6)),
+        ],
+    )
+    entry = ContribEntry(
+        name="workbench-configuration",
+        definition=configuration(
+            document,
+            build,
+            environment=ConfigurationEnvironment(
+                hub="bazaar_core:ContribHub",
+                entries=tuple(
+                    EnabledContrib(entry=entry.name, config=entry.config)
+                    for entry in bootstrap.entries
+                ),
+            ),
+            start=lambda _: Composition(),
+        ),
+    )
+    return composition.model_copy(
+        update={"entries": (*bootstrap.entries, entry, *composition.entries)}
+    )
 
 
 class ChannelConfig(BaseModel):
@@ -397,7 +454,7 @@ channel_builder = Contrib(
 
 
 class HarnessConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(frozen=True)
     title: str = "Document report"
     input_mode: Literal["interactive", "batch"] = "interactive"
     publication_delay: float = Field(default=0, ge=0)
@@ -408,10 +465,12 @@ class DocumentStream:
     def __init__(
         self,
         process: asyncio.subprocess.Process,
+        turn: HarnessTurn,
         approval: ApprovalHandler,
         timeout: float,
     ):
         self.process = process
+        self.turn = turn
         self.approval = approval
         self.timeout = timeout
         self.stdin = cast(asyncio.StreamWriter, process.stdin)
@@ -469,7 +528,19 @@ class DocumentStream:
                     task.add_done_callback(self.decisions.discard)
             await self.process.wait()
             if self.process.returncode:
-                raise RuntimeError((await self.stderr.read()).decode())
+                self.events.put_nowait(
+                    HarnessOutput(
+                        session_id=self.turn.session_id,
+                        turn_id=self.turn.id,
+                        kind="failed",
+                        failure=HarnessFailure(
+                            HarnessFailureReason.EXECUTION,
+                            (await self.stderr.read()).decode(),
+                            code=self.process.returncode,
+                        ),
+                        provider="document",
+                    )
+                )
         except Exception as error:  # noqa: BLE001
             self.events.put_nowait(error)
         finally:
@@ -521,17 +592,6 @@ class DocumentHarness:
         self.context = ""
         self.contexts: dict[str, str] = {}
 
-    async def describe(self, *, timeout: float) -> HarnessDescription:
-        return HarnessDescription(
-            skills=(
-                HarnessSkill(
-                    name="document-report",
-                    description="Count a document and save its report",
-                    source=__name__,
-                ),
-            )
-        )
-
     async def start_session(
         self, request: SessionInput, *, timeout: float
     ) -> ProviderCallResult[HarnessSession]:
@@ -577,7 +637,7 @@ class DocumentHarness:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stream = DocumentStream(process, approval_handler, timeout)
+        stream = DocumentStream(process, turn, approval_handler, timeout)
         self.streams.append(stream)
         self.turns[session.id, turn.id] = stream
         request = {
@@ -621,8 +681,10 @@ class DocumentHarness:
         if session.id not in self.sessions:
             return ProviderCallResult(
                 status=ProviderCallStatus.FAILED,
-                error_kind="provider_failed",
-                error_message="Document session no longer exists",
+                failure=HarnessFailure(
+                    HarnessFailureReason.UNAVAILABLE,
+                    "Document session no longer exists",
+                ),
             )
         await asyncio.to_thread(
             (self.sessions[session.id] / "session.json").write_text,
@@ -742,6 +804,22 @@ class HarnessBuilderParameters(HarnessBuilderConfig):
     entity_model: ClassVar[type[BaseModel]] = HarnessConfig
     entry: ClassVar[Contrib[Any]] = harness
     capabilities: ClassVar[tuple[str, ...]] = ("document-report", "approval")
+
+    @classmethod
+    async def inspect(cls, workspace: Path, *, timeout: float) -> HarnessInspection:
+        return HarnessInspection(
+            available=await asyncio.to_thread(
+                Path(__file__).with_name("worker.py").is_file
+            ),
+            version=sys.version.split()[0],
+            skills=(
+                HarnessSkill(
+                    name="document-report",
+                    description="Count a document and save its report",
+                    source=__name__,
+                ),
+            ),
+        )
 
 
 @asynccontextmanager

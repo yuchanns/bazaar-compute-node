@@ -116,7 +116,7 @@ channel 与 harness 的接口和登记服务分别归上述公共包；具体 pr
 | `bazaar-contrib-legacy-node-migrations` | `legacy-node-migrations`：共享 | 依赖 SCHEMA，仅接续已有 Node 1～32 历史，提供 LEGACY_NODE_MIGRATIONS；业务 contrib 自行登记自己的基线与后续版本 | 3 | Node 持久化业务插件的依赖 |
 | `bazaar-contrib-schema` | `schema`：共享 | 模型／索引注册、模块版本、已有进度、表归属交接与 ledger；通过 DB 在事务内执行业务包拥有的迁移 | 3 | 默认、server |
 | `bazaar-contrib-messages` | 公共契约 | 消息／会话、Actor、请求与结果、消息及通用会话读写 Protocol、共享 MESSAGES key 和纯回执转换；依赖 core 和 channel 公共契约 | 4 | 消息实现、协作及 server 投影的契约依赖 |
-| `bazaar-contrib-messages-node` | `messages-node`：共享；`messages-cli`：命令生命周期 | 历史、未读、搜索、附件、草稿、收发回执和 thread follow 的本机实现；持有目标解析、草稿、交付和数据作用域；依赖消息、storage、Node 迁移就绪、调用、sidecar 与审计契约 | 4 | 默认配置选择并由 manager 恢复 |
+| `bazaar-contrib-messages-node` | `messages-node`：共享 | 历史、未读、搜索、附件、草稿、收发回执和 thread follow 的本机实现；持有目标解析、草稿、交付和数据作用域；业务请求经公共服务处理；bcc Click 命令及格式化归 Agent 工具 | 4 | 默认配置选择并由 manager 恢复 |
 | `bazaar-contrib-collaboration` | `collaboration`：共享 | 复用消息的 sender／contact、Actor 和会话公共契约，迁入准入、登记、审核、消息引用关联及设置；消息数据经消息接口读写，审核决策和审计由协作持有，设置等自身数据通过 DB 管理；通过 agent 生命周期绑定并共享会话锁；页面短数字 refs 随服务端 history／contacts 迁移 | 5 | 默认配置选择并由 manager 恢复；server 联系人的契约依赖 |
 | `bazaar-contrib-timer-wheel` | `timer-wheel`：共享 | 提供 TIMER，持有时间轮与驱动任务 | 2 | 默认、server |
 | `bazaar-contrib-reminder` | `reminder`：共享 | Reminder 的模型、持久化、到期、snooze、更新、取消；依赖 storage、schema、timer 和消息 | 6 | 默认 |
@@ -206,6 +206,10 @@ Lark／WeCom 实现同一 channel 接口，Claude Code 实现同一 harness 接�
 
 `bazaar-contrib-channel` 拥有 provider 无关的 `Channel`、`CHANNEL`、`ChannelBuilder`、输入消息、发送请求、交付回执、附件、身份和渠道审批载荷。
 `bazaar-contrib-harness` 拥有 `Harness`、`HARNESS`、`HarnessBuilder`、会话与 turn 输入、指令和工具环境、可取消的输出流、审批事件、能力／模型／skills 查询及关闭结果。
+公共 `HarnessBuilder.inspect(workspace, timeout)` 统一返回可用性、CLI 版本、模型／推理档位与工作区 skills，
+查询无需 Agent 或运行会话；运行实例不再提供重复的 describe 查询。
+上游 Agent 按实际 Actor 选择 `ApprovalPolicy`、`SandboxPolicy` 枚举和网络权限，通过 SessionInput 传递该会话的实际策略。
+Codex／Claude 只将这些策略转换为各自原生参数；Harness 输入不携带 Agent 的 mode。
 输入与结果在公共接口边界由 Pydantic 校验；双方通过公共审批标识关联请求和结果。
 审批请求／决定／结果由 harness 公共包拥有，channel 使用同一载荷展示审批并收集结果。
 agent 校验审批与当前 session／turn 及原 request_id 的关联；不匹配时记录 warning 日志，并返回关联原请求、带 reason 的 rejected 决定，审计保留实际请求与返回决定。
@@ -289,7 +293,7 @@ agent 组合用普通 Python 函数从已校验输入构造全部已知实例及
 后续 TUI／GUI 界面由独立 contrib 消费同一公共协作服务。
 
 该包拥有 developer instruction、bcc 工具环境及身份／会话绑定、模型上下文、消息与提醒处理、审批及输出交付的编排，依赖公共 channel／harness、消息、协作、存储、timer 和 Reminder。
-初始化的指令渲染、workspace bcc wrapper、PATH 与 session 环境先在框架 Task12.1 接入；bcc 使用 invoke 公共命令机制和独立 bcc_commands 入口组，其他 contrib 按各自阶段登记二级命令，命令帮助与新增实现说明统一使用 contrib／contribs。消息接入前完成这一前置任务，完整的命令能力绑定和通讯编排继续在执行任务中交付。
+初始化的指令渲染、workspace bcc wrapper、PATH 与 session 环境先在框架 Task12.1 接入；bcc 沿 0.2 直接注册固定 Click 命令，Agent 接受 CONFIGURATION 并提供所选配置环境，bcc 工具在自己的 Hub 中接受 CLIENT、直接使用所选 sidecar，命令帮助与新增实现说明统一使用 contrib／contribs。消息接入前完成这一前置任务，完整的命令能力绑定和通讯编排继续在执行任务中交付。
 现有 `src/bazaar_compute_node/core/instruction.py`、`resources/developer_instructions.md` 的渲染与资源，以及旧 runtime 中构造 BCN 会话的业务逻辑，移入新 agent 实现；旧源码按统一清理阶段保留。
 功能插件提供 typed 服务、事件、配置模型和能力说明，由所选 agent 明确读取并组织成其模型输入；提示词的语义与组合由 agent 拥有。
 harness provider 接收 agent 已组织的指令、运行输入与工具环境，管理模型协议、进程和事件映射。
@@ -530,7 +534,7 @@ timer 契约由功能契约包持有，定义定时器创建、重置、取消�
 时间轮 provider 在其消费者结束后关闭。更换 timer provider 时，消费者继续使用同一契约。
 
 Reminder 模块依赖 DB 与 TIMER，自行持有持久化、调度、snooze、更新、取消、到期与 agent 唤醒规则。
-其 main 模型、周期计算、命令、单全局 frontier scheduler 和 bcc 文案迁入独立 reminder 包。Reminder 自有状态经 DB 读写；消息经公共消息作用域访问，到期状态与系统消息共用一个 DB 事务。原 Node 迁移账本继续提供 reminders 表，执行组合完成 agent 绑定后启动共享 scheduler。
+其 main 模型、周期计算、业务命令和单全局 frontier scheduler 迁入独立 reminder 包，bcc 命令及文案归 Agent 工具。Reminder 自有状态经 DB 读写；消息经公共消息作用域访问，到期状态与系统消息共用一个 DB 事务。原 Node 迁移账本继续提供 reminders 表，执行组合完成 agent 绑定后启动共享 scheduler。
 agent 空闲管理、消息合并等待、渠道限流与重试、版本检查、健康上报和远程连接重连使用通用 timer 服务。
 定时器任务先交付公共服务与异常契约，各业务阶段再实现相应调用者并依赖 TIMER 公共服务；旧时间轮及中心装配在最终发行阶段统一清理。
 以真实定时器、隔离资源及业务流程验证到期、重置、取消、驱动故障、消费者退出和宿主关闭的行为。

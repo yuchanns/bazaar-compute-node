@@ -8,7 +8,7 @@ from uuid import UUID
 lazy from pathlib import Path
 
 from bazaar_contrib_channel import ChannelBuilder, ChannelBuilderConfig
-from bazaar_contrib_harness import HarnessBuilder, HarnessBuilderConfig
+from bazaar_contrib_harness import HarnessBuilder, HarnessBuilderConfig, SandboxPolicy
 from bazaar_core import Composition
 from pydantic import (
     BaseModel,
@@ -30,6 +30,13 @@ class ProviderConfig(BaseModel):
     kind: str = Field(min_length=1)
 
 
+class HarnessConfig(ProviderConfig):
+    """Select execution policy independently of the provider's own parameters."""
+
+    sandbox_policy: SandboxPolicy = SandboxPolicy.WORKSPACE_WRITE
+    network_access: bool = True
+
+
 class AgentConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -38,7 +45,7 @@ class AgentConfig(BaseModel):
     mode: Literal["session", "dangerous_individual"] = "session"
     idle_timeout: float = Field(default=0, ge=0, allow_inf_nan=False)
     channel: tuple[ProviderConfig, ...] = ()
-    harness: tuple[ProviderConfig, ...] = ()
+    harness: tuple[HarnessConfig, ...] = ()
 
     def validate_providers(
         self,

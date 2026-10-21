@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 from collections.abc import Mapping
@@ -10,7 +11,6 @@ from typing import Annotated, cast
 import click
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
-from ..dispatch import format_check_message, format_read_message
 from ..rendering import TextTemplate
 from ._client import BccCommandError
 
@@ -33,22 +33,155 @@ def print_error(error: BccCommandError) -> None:
     )
 
 
-_INBOX_CHECK = TextTemplate.from_resource("bcc/inbox_check.tpl")
+_INBOX_CHECK = TextTemplate.from_resource("bcc/messages/inbox_check.tpl")
 
 
-_CHECK = TextTemplate.from_resource("bcc/check.tpl")
+_CHECK = TextTemplate.from_resource("bcc/messages/check.tpl")
 
 
-_READ = TextTemplate.from_resource("bcc/read.tpl")
+_READ = TextTemplate.from_resource("bcc/messages/read.tpl")
 
 
-_SEARCH = TextTemplate.from_resource("bcc/search.tpl")
+_SEARCH = TextTemplate.from_resource("bcc/messages/search.tpl")
 
 
-_UNFOLLOW = TextTemplate.from_resource("bcc/unfollow.tpl")
+_UNFOLLOW = TextTemplate.from_resource("bcc/messages/unfollow.tpl")
 
 
-_ERROR = TextTemplate.from_resource("bcc/error.tpl")
+_ERROR = TextTemplate.from_resource("bcc/messages/error.tpl")
+
+
+def format_message_time(timestamp_ms: int) -> str:
+    return (
+        datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+        .astimezone()
+        .strftime("%Y-%m-%d %H:%M:%S")
+    )
+
+
+_ATTACHMENT_SUFFIX = TextTemplate.from_resource(
+    "bcc/messages/command/attachment_suffix.tpl"
+)
+_SENDER = TextTemplate.from_resource("bcc/messages/command/sender.tpl")
+_CHECK_MESSAGE = TextTemplate.from_resource("bcc/messages/command/check_message.tpl")
+_READ_MESSAGE = TextTemplate.from_resource("bcc/messages/command/read_message.tpl")
+
+
+def _message_timestamp(message: Mapping[str, object]) -> int:
+    for field_name in ("provider_time_ms", "received_at_ms", "created_at_ms"):
+        timestamp = message.get(field_name)
+        if timestamp is not None:
+            return cast(int, timestamp)
+    raise ValueError("message has no display timestamp")
+
+
+def _message_header_fields(
+    message: Mapping[str, object],
+) -> tuple[str, str, str, str, str | None, str]:
+    target = cast(str, message["target"])
+    message_id = cast(str, message["message_id"])
+    sender_kind = cast(str, message["sender_kind"])
+    sender_value = message["sender"]
+    sender: str | None = None
+    if sender_value is not None:
+        sender_mapping = cast(Mapping[str, object], sender_value)
+        sender = (
+            _SENDER.render(
+                {
+                    "sender_id": cast(str | None, sender_mapping.get("id")),
+                    "sender_name": cast(str | None, sender_mapping.get("name")),
+                    "sender_display_name": cast(
+                        str | None, sender_mapping.get("display_name")
+                    ),
+                }
+            )
+            or None
+        )
+    return (
+        target,
+        message_id,
+        format_message_time(_message_timestamp(message)),
+        sender_kind,
+        sender,
+        cast(str, message["body"]),
+    )
+
+
+def _attachment_suffix(message: Mapping[str, object]) -> str:
+    attachments = cast(list[Mapping[str, object]], message["attachments"])
+    return _ATTACHMENT_SUFFIX.render(
+        {
+            "attachments": [
+                {
+                    "name": cast(str, attachment["name"]),
+                    "attachment_id": cast(str | None, attachment.get("attachment_id")),
+                    "state": cast(str, attachment["state"]),
+                    "path": attachment.get("relative_path"),
+                    "error": attachment.get("error"),
+                }
+                for attachment in attachments
+            ]
+        }
+    )
+
+
+def format_check_message(message: Mapping[str, object]) -> str:
+    target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
+        message
+    )
+    source_target = message.get("system_message_source_target")
+    source_message_id = message.get("system_message_source_message_id")
+    return _CHECK_MESSAGE.render(
+        {
+            "target": target,
+            "message_id": message_id,
+            "timestamp": timestamp,
+            "sender_kind": sender_kind,
+            "reply_to_message_id": message["reply_to_message_id"],
+            "sender": sender,
+            "body": body,
+            "attachment_suffix": _attachment_suffix(message),
+            "system_message_kind": message.get("system_message_kind"),
+            # a repeating reminder is the only one that can still be updated
+            "repeats": "\nNext iteration: " in body,
+            "source_target": (
+                json.dumps(cast(str, source_target))
+                if source_target is not None
+                else None
+            ),
+            "source_message_id": (
+                json.dumps(cast(str, source_message_id))
+                if source_message_id is not None
+                else None
+            ),
+        }
+    )
+
+
+def format_read_message(
+    message: Mapping[str, object],
+    *,
+    index: int,
+    count: int,
+) -> str:
+    target, message_id, timestamp, sender_kind, sender, body = _message_header_fields(
+        message
+    )
+    return _READ_MESSAGE.render(
+        {
+            "index": index,
+            "count": count,
+            "seq": cast(int, message["seq"]),
+            "message_id": message_id,
+            "timestamp": timestamp,
+            "sender_kind": sender_kind,
+            "target": target,
+            "reply_to_message_id": message["reply_to_message_id"],
+            "sender": sender,
+            "body": body,
+            "attachment_suffix": _attachment_suffix(message),
+        }
+    )
 
 
 def serialize_inbox_check(result: Mapping[str, object]) -> str:

@@ -7,7 +7,9 @@ from ._format import echo, serialize_inbox_check
 
 
 @click.group(help="Inbox target summary operations")
-def inbox() -> None: ...
+@click.pass_context
+def inbox(ctx: click.Context) -> None:
+    ctx.obj = MessageClient(ctx.obj.request)
 
 
 @inbox.command(

@@ -23,6 +23,7 @@ from bazaar_contrib_collaboration import (
     CONTACT_REVIEWED,
     ContactReviewed,
 )
+from bazaar_contrib_config import CONFIGURATION
 from bazaar_contrib_harness import (
     HARNESS,
     HARNESS_BUILDERS,
@@ -51,9 +52,10 @@ from pydantic import BaseModel, ConfigDict
 
 from . import states
 from .loop import AgentLoop, Runtime
-from .models import Agent, AgentConfig, Config, ProviderConfig
+from .models import Agent, AgentConfig, Config, HarnessConfig, ProviderConfig
 from .registry import AGENTS, SERVICES, AgentInstances, configured, execution
 from .routing import Connection
+from .tool import Tool
 from .wrapper import install, remove
 
 __all__ = [
@@ -63,6 +65,7 @@ __all__ = [
     "AgentConfig",
     "AgentInstances",
     "Config",
+    "HarnessConfig",
     "ProviderConfig",
     "agent",
     "compose",
@@ -86,7 +89,7 @@ class _ChannelConfig(BaseModel):
 
 class _HarnessConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    provider: ProviderConfig
+    provider: HarnessConfig
     builder: HarnessBuilder
     priority: int
 
@@ -119,28 +122,30 @@ async def loop_lifespan(ctx: Context, config: _InstanceConfig):
     identity = ctx.accept(AGENT)
     assert identity._command is not None
     registry = ctx.accept(AGENTS)
-    loop = AgentLoop(
-        identity,
-        config.agent,
-        identity._command,
-        ctx.accept(MESSAGES),
-        ctx.accept(COLLABORATION),
-        ctx.accept(REMINDER),
-        ctx.accept(TIMER),
-        ctx.accept(AUDIT),
-        ctx.accept(DB),
-        ctx.id,
-        registry.channel_order,
-    )
-    identity._loop = loop
-    registry.running[identity.id] = identity
-    try:
-        async with loop.lifespan():
-            ctx.offer(_LOOP, loop)
-            yield
-    finally:
-        identity._loop = None
-        registry.running.pop(identity.id, None)
+    async with Tool(ctx.accept(CONFIGURATION)) as tool:
+        loop = AgentLoop(
+            identity,
+            config.agent,
+            identity._command,
+            ctx.accept(MESSAGES),
+            ctx.accept(COLLABORATION),
+            ctx.accept(REMINDER),
+            ctx.accept(TIMER),
+            ctx.accept(AUDIT),
+            ctx.accept(DB),
+            tool.path,
+            ctx.id,
+            registry.channel_order,
+        )
+        identity._loop = loop
+        registry.running[identity.id] = identity
+        try:
+            async with loop.lifespan():
+                ctx.offer(_LOOP, loop)
+                yield
+        finally:
+            identity._loop = None
+            registry.running.pop(identity.id, None)
 
 
 @asynccontextmanager
@@ -262,7 +267,6 @@ async def harness_lifespan(ctx: Context, config: _HarnessConfig):
             agent_id=agent.id,
             agent_name=agent.name,
             workspace=agent.workspace,
-            mode=loop.config.mode,
         ),
     )
     composition = composition.model_copy(
@@ -289,7 +293,7 @@ instance = Contrib(config=_InstanceConfig, offers=[AGENT], lifespan=instance_lif
 _loop = Contrib(
     config=_InstanceConfig,
     offers=[_LOOP],
-    accepts=[*SERVICES, AGENTS, AGENT],
+    accepts=[*SERVICES, AGENTS, AGENT, CONFIGURATION],
     lifespan=loop_lifespan,
     listen={CONTACT_REVIEWED: contact_reviewed},
 )

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from jinja2 import Environment, PackageLoader, StrictUndefined, Template, meta
 from jinja2.exceptions import TemplateSyntaxError
 
-_RESOURCE_LOADER = PackageLoader("bazaar_contrib_reminder", "resources")
+_RESOURCE_LOADER = PackageLoader("bazaar_contrib_agent", "resources")
 _TEXT_ENVIRONMENT = Environment(
     loader=_RESOURCE_LOADER,
     undefined=StrictUndefined,

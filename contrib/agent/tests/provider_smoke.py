@@ -35,7 +35,7 @@ from bazaar_core import (
     Failed,
     load,
 )
-from bcn_agent_workbench import Attachment
+from bcn_agent_workbench import Attachment, HarnessBuilderParameters, configured
 from bcn_agent_workbench import ChannelMessage as InboundMessage
 
 from bazaar_contrib_agent import AGENTS, AgentInstances
@@ -539,8 +539,62 @@ async def steering(peer: Peer, draft: Path, persisted: asyncio.Queue[AuditEvent]
     assert continued.parent == saved.parent
 
 
+async def runtime_failures(peer: Peer, draft: Path):
+    """Complete reports after real write conflicts, fallback and final feedback."""
+
+    for failures in (1, 2):
+        _, packet = await submit(peer, draft)
+        conflicts = []
+        try:
+            for attempt in range(failures):
+                if attempt:
+                    packet = await peer.until("approval")
+                approval = ChannelApprovalRequest.model_validate(packet["approval"])
+                path = Path(str(approval.approval.details["path"]))
+                # An existing directory prevents this child process's real write.
+                await asyncio.to_thread(path.mkdir)
+                conflicts.append(path)
+                await peer.write(
+                    {
+                        "id": packet["id"],
+                        "decision": ApprovalResult(
+                            request_id=approval.approval.request_id,
+                            decision="approved",
+                        ).model_dump(mode="json"),
+                    }
+                )
+            if failures == 1:
+                saved = await finish(peer)
+                data = json.loads(await asyncio.to_thread(saved.read_text))
+                assert data["words"] > 0
+                assert saved.parent != conflicts[0].parent
+            else:
+                feedback = await peer.until("outbound")
+                terminal = HarnessOutput.model_validate(
+                    next(
+                        item["event"]
+                        for item in reversed(peer.events)
+                        if item.get("event", {}).get("kind") == "failed"
+                    )
+                )
+                assert terminal.failure is not None
+                assert terminal.failure.message in feedback["outbound"]["body"]
+                assert all(
+                    part in feedback["outbound"]["body"]
+                    for part in conflicts[-1].parts[-2:]
+                )
+                assert terminal.failure.code is not None
+        finally:
+            for path in conflicts:
+                await asyncio.to_thread(path.rmdir)
+        saved = await report(peer, draft)
+        assert json.loads(await asyncio.to_thread(saved.read_text))["words"] > 0
+
+
 async def exercise(path: Path):
-    os.environ["BCN_ENDPOINT"] = (
+    inspection = await HarnessBuilderParameters.builder().inspect(path, timeout=30)
+    assert inspection.available and inspection.version and inspection.skills
+    endpoint = (
         str(path / "sidecar.sock")
         if os.name != "nt"
         else "\\\\.\\pipe\\bcn-agent-" + str(uuid7())
@@ -563,7 +617,7 @@ async def exercise(path: Path):
             ContribSpec(contrib="sidecar"),
             ContribSpec(
                 contrib="sidecar-windows" if os.name == "nt" else "sidecar-unix",
-                config={"endpoint": os.environ["BCN_ENDPOINT"]},
+                config={"endpoint": endpoint},
             ),
             ContribSpec(contrib="storage"),
             ContribSpec(
@@ -611,6 +665,7 @@ async def exercise(path: Path):
             ContribSpec(contrib="document-builder"),
         ],
     )
+    composition = await configured(path / "config.toml", composition)
     ready = asyncio.Event()
     registries: list[AgentInstances] = []
     persisted: asyncio.Queue[AuditEvent] = asyncio.Queue()
@@ -1079,6 +1134,8 @@ async def exercise(path: Path):
                 assert await asyncio.to_thread(
                     (failure_workspace / "channel.closed").read_text
                 )
+
+                await runtime_failures(connected["Cloud"], drafts["Cloud"])
 
                 # Stop with both an unacknowledged native send and a live approval.
                 _, pending = await submit(secondary, drafts["Cloud"])

@@ -19,6 +19,7 @@ from bazaar_contrib_channel import (
     ChannelInput,
     ChannelTarget,
 )
+from bazaar_contrib_config import CONFIGURATION
 from bazaar_contrib_harness import (
     HARNESS,
     HARNESS_INPUT,
@@ -37,6 +38,7 @@ from bcn_agent_workbench import ChannelBuilderParameters, HarnessBuilderParamete
 from pydantic import BaseModel, ConfigDict
 
 from bazaar_contrib_agent import AgentConfig
+from bazaar_contrib_agent.tool import Tool
 from bazaar_contrib_agent.wrapper import install, remove
 
 
@@ -51,6 +53,7 @@ class Config(BaseModel):
 
 class Input(Config):
     command: Path
+    tool_config: Path
 
 
 class Locks:
@@ -164,6 +167,7 @@ async def process(ctx: Context, config: Input):
                             "BCN_ACTOR_ID": thread.id,
                             "BCN_RUNTIME_SESSION_ID": "",
                             "BCN_COMMAND_CAPABILITY": capability,
+                            "BCN_TOOL_CONFIG": str(config.tool_config),
                             "EDITOR_NAME": config.title,
                         },
                     )
@@ -240,27 +244,34 @@ async def lifespan(ctx: Context, config: Config):
         ),
     )
     try:
-        async with ctx.enable(
-            Composition(
-                entries=(
-                    *channel.entries,
-                    *harness.entries,
-                    ContribEntry(
-                        name="editor",
-                        definition=Contrib(
-                            config=Input,
-                            accepts=[MESSAGES, CHANNEL, HARNESS],
-                            lifespan=process,
+        async with (
+            Tool(ctx.accept(CONFIGURATION)) as tool,
+            ctx.enable(
+                Composition(
+                    entries=(
+                        *channel.entries,
+                        *harness.entries,
+                        ContribEntry(
+                            name="editor",
+                            definition=Contrib(
+                                config=Input,
+                                accepts=[MESSAGES, CHANNEL, HARNESS],
+                                lifespan=process,
+                            ),
+                            config={
+                                **config.model_dump(mode="python"),
+                                "command": command,
+                                "tool_config": tool.path,
+                            },
                         ),
-                        config={**config.model_dump(mode="python"), "command": command},
-                    ),
-                )
+                    )
+                ),
+                local=(CHANNEL, CHANNEL_INPUT, HARNESS, HARNESS_INPUT),
             ),
-            local=(CHANNEL, CHANNEL_INPUT, HARNESS, HARNESS_INPUT),
         ):
             yield
     finally:
         await asyncio.to_thread(remove, command)
 
 
-editor = Contrib(config=Config, accepts=[MESSAGES], lifespan=lifespan)
+editor = Contrib(config=Config, accepts=[MESSAGES, CONFIGURATION], lifespan=lifespan)

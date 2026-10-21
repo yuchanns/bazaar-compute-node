@@ -57,9 +57,7 @@ async def exercise(path: Path):
     ]
 
     async def start():
-        await asyncio.to_thread(
-            config.write_text, json.dumps({"endpoint": endpoint, "contribs": contribs})
-        )
+        await asyncio.to_thread(config.write_text, json.dumps({"contribs": contribs}))
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             str(Path(__file__).with_name("recovery_node.py")),
