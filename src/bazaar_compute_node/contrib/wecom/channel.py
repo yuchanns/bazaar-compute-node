@@ -1067,6 +1067,9 @@ class WeComChannel(IChannel):
                     return
                 await self._backoff(auth_attempt)
             except Exception as error:  # noqa: BLE001
+                self._observe(
+                    "wecom.connection.failed", error_type=type(error).__name__
+                )
                 network_attempt += 1
                 self._network_attempts = network_attempt
                 self._state = "reconnecting"
@@ -1110,6 +1113,21 @@ class WeComChannel(IChannel):
             if response.type is aiohttp.WSMsgType.ERROR:
                 raise ConnectionError("WeCom WebSocket reader failed")
             frame = self._frame(self._message_data(response))
+            body = frame.get("body")
+            event = body.get("event") if isinstance(body, dict) else None
+            self._observe(
+                "wecom.frame.received",
+                command=frame.get("cmd"),
+                request_id=self._request_id(frame),
+                error_code=frame.get("errcode"),
+                body_keys=sorted(body) if isinstance(body, dict) else None,
+                message_type=body.get("msgtype") if isinstance(body, dict) else None,
+                provider_message_id=(
+                    body.get("msgid") if isinstance(body, dict) else None
+                ),
+                topic_id=body.get("topic_id") if isinstance(body, dict) else None,
+                event_type=event.get("eventtype") if isinstance(event, dict) else None,
+            )
             self._last_frame_at_ms = time_ns() // 1_000_000
             if self._is_disconnected_event(frame):
                 self._last_event_type = "disconnected_event"
@@ -1133,6 +1151,7 @@ class WeComChannel(IChannel):
             if frame.get("cmd") in {
                 "aibot_msg_callback",
                 "aibot_event_callback",
+                "aibot_topic_event_callback",
             }:
                 await self._receive_message(frame)
 
@@ -1446,7 +1465,7 @@ class WeComChannel(IChannel):
     async def _receive_message(self, frame: Mapping[str, object]) -> None:
         command = frame.get("cmd")
         body = frame.get("body")
-        if command == "aibot_event_callback":
+        if command in {"aibot_event_callback", "aibot_topic_event_callback"}:
             await self._receive_event(frame)
             return
         now_ms = time_ns() // 1_000_000
