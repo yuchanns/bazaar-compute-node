@@ -2,7 +2,7 @@
 
 ## 目标与入口
 
-从 GitHub Release workflow 的 Branch 下拉框选择发行分支，输入一次 `X.Y.Z` 或
+从 GitHub Actions 中 Release workflow 的 Branch 下拉框选择发行分支，输入一次 `X.Y.Z` 或
 `X.Y.ZrcN`，统一准备并发布 app、core 和 contrib/ 下的公开 workspace 成员。
 正式版 `X.Y.Z` 必须从 `main` 运行；RC 可以选择其他发行分支。
 当前 28 个成员的版本均为 `0.3.0rc1`；首个 RC 为后续独立 provider 提供可下载的正式依赖。
@@ -54,10 +54,20 @@ Release 与 pull-request workflow 共用 `.github/actions/` 下的 composite act
    按各包已声明的平台范围运行现有 package smoke，分别验证 wheel 与 sdist。
 3. 使用同一个 PyPI environment，通过 uv Trusted Publishing 按依赖顺序上传，每包保存状态；
    将 PyPI 返回的文件 SHA-256 与固定清单比较，再从真实 PyPI 干净安装全体公开成员并运行验收。
-4. 完成后才推送发行提交上的 annotated tag，创建对应 GitHub release，附上固定产物清单。
-   RC 标记为 prerelease；同一版本重跑继续核对原标签、提交及清单。
+4. 完成后仅推送发行提交上的 annotated tag；固定产物清单随分发文件保存在 GitHub Actions artifact。
+   RC 使用带 rc 的版本与标签；同一版本重跑继续核对原标签、提交及清单。
 
 首次上传各新项目需要对应的 PyPI Trusted Publisher。仓库 pypi environment 当前没有分支限制。
+
+## 发布分支隔离
+
+`main` 的 0.2 发布与 `0.3` 的 workspace 发布写回各自分支，可以独立运行。
+workspace workflow 使用 `pypi-release-${{ github.ref }}` 作为 concurrency group，
+保留 `cancel-in-progress: false`。同一分支的不同版本仍串行，保护版本提交的写回顺序；
+不同发行分支使用独立组。当前 `main` 的旧 workflow 只允许从 main 发布，使用原有独立组。
+
+GitHub 的 concurrency group 在仓库内共享，可使用 `github.ref` 区分分支。
+参考：[GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)。
 
 ## Tasks
 
@@ -65,3 +75,5 @@ Release 与 pull-request workflow 共用 `.github/actions/` 下的 composite act
   两份 workflow 共用环境、静态检查与逐包测试 action；
   用真实候选产物完成隔离安装、相同版本准备及重试验收，通过 Ruff、根目录 LSP 与 PR CI，
   创建目标为 `0.3` 的 PR 后停下 review。
+- [x] Task 2：按本次发布复查修正 CI：发行收尾仅推送验证过的 annotated tag，移除 GitHub Release
+  及其资产发布步骤；workspace 发布锁按发行分支隔离，完成 actionlint、Ruff、根目录 LSP 和 diff 检查。
