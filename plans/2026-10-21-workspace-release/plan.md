@@ -21,13 +21,18 @@ GitHub 要求默认分支已有 `workflow_dispatch` 入口，再允许通过界�
 - `scripts/release.py` 校验输入版本及各成员的兼容范围，通过 `uv version --package ... --frozen`
   同步成员版本，再更新共享锁。仍接受目标版本的依赖下限和资源兼容范围继续保留；不接受目标版本
   的正式依赖在准备前明确报告，修改真实兼容契约后再发行。
-- 首次发行即使源码已经声明目标版本，也创建 `.releases/<version>.json`，记录发行分支、
-  准备前提交和成员清单。GitHub 使用该分支的预期 HEAD 创建并验证签名的 `Release v<version>`
-  提交；源码已经推进时重新准备。构建、验收和上传全部固定该发行提交。
+- 发行计划生成在已忽略的 `build/release/<version>.json`，记录发行分支、准备前提交和成员清单，
+  在创建版本提交前保存为 Actions artifact。GitHub 使用该分支的预期 HEAD 创建并验证签名的
+  `Release v<version>` 提交；源码已经推进时重新准备。版本提交只包含版本、锁和正式版变更日志。
+  构建、验收和上传从 artifact 取得计划，全部固定该发行提交。
+  源码已经声明目标版本且无需更新变更日志时，直接固定已验证签名的源码提交。
 - `uv build --all-packages --no-sources` 一次构建公开成员的 wheel 和 sdist；产物清单记录
   每个包的源码位置、版本、依赖、文件名和 SHA-256，并核对发行元数据及 contrib 入口唯一性。
 - GitHub artifact 保留固定产物。重跑相同版本时复用已记录的发行提交和对应 artifact，校验提交、
   清单和文件校验值后继续，上传由 uv 核对已有文件，仅补齐内容相同组合中的缺失项。
+  计划恢复先取同分支发行 workflow 的 `release-plan-<version>`，首个已发布 RC 使用现有
+  `python-dist-<version>` 内的 manifest 恢复。计划保存后版本提交才开始创建；重试按提交标题和
+  唯一父提交找回固定版本提交，再核对 GitHub 验证签名。尚未创建版本提交的计划允许重新准备。
 
 参考：[uv build](https://docs.astral.sh/uv/reference/cli/#uv-build)、
 [uv 发布及重复上传](https://docs.astral.sh/uv/guides/publish/)。
@@ -37,6 +42,7 @@ GitHub 要求默认分支已有 `workflow_dispatch` 入口，再允许通过界�
 Release 与 pull-request workflow 共用 `.github/actions/` 下的 composite action：
 
 - `setup` 统一安装 uv 0.13.0、Python 3.15 与全部 workspace 的锁定依赖，发行后续 job 也复用它。
+- `restore-release-plan` 从同分支的发行 Actions artifact 恢复计划，供源码检查和版本准备复用。
 - 现有 `checks` 改为接收 `packages`，逐包调用 `scripts/ci.py check`，由两份 workflow 的
   checks job 引用；PR 传入受影响集合，Release 传入全部成员。
 - `test` 接收单个 `package`，依次执行普通测试、Linux 用户服务环境准备、独立 system 测试和
@@ -77,3 +83,5 @@ GitHub 的 concurrency group 在仓库内共享，可使用 `github.ref` 区分�
   创建目标为 `0.3` 的 PR 后停下 review。
 - [x] Task 2：按本次发布复查修正 CI：发行收尾仅推送验证过的 annotated tag，移除 GitHub Release
   及其资产发布步骤；workspace 发布锁按发行分支隔离，完成 actionlint、Ruff、根目录 LSP 和 diff 检查。
+- [x] Task 3：从当前源码移除生成的发行计划，改用 Actions artifact 传递与恢复；保留已发布标签和
+  提交，验证真实 RC 清单恢复、后续版本准备与固定产物构建，通过静态检查后按本次明确授权直推 `0.3`。

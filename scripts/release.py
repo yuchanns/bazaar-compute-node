@@ -31,6 +31,7 @@ ReleaseVersion = Annotated[
         pattern=r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(rc[1-9][0-9]*)?$"
     ),
 ]
+STATE = Path("build/release")
 
 
 class Request(BaseModel):
@@ -59,6 +60,7 @@ class Source(BaseModel):
     branch: str
     source_commit: str
     packages: list[Package]
+    release_commit: str = ""
 
 
 class Distribution(BaseModel):
@@ -94,12 +96,25 @@ def plan(request: Request) -> Source:
         capture_output=True,
         check=True,
     )
-    saved = Path(".releases") / f"{request.version}.json"
+    saved = STATE / f"{request.version}.json"
     if saved.exists():
         source = Source.model_validate_json(saved.read_text())
         if source.branch != request.branch or source.version != request.version:
             raise ValueError("this version was prepared on another release branch")
-        return source
+        if not source.release_commit:
+            history = subprocess.check_output(
+                ["git", "log", "--format=%H%x00%P%x00%s", "HEAD"], text=True
+            )
+            for line in history.splitlines():
+                commit, parents, subject = line.split("\0", 2)
+                if (
+                    subject == f"Release v{request.version}"
+                    and parents == source.source_commit
+                ):
+                    source.release_commit = commit
+                    break
+        if source.release_commit:
+            return source
     root = Path.cwd()
     metadata = load_metadata(root)
     packages: dict[str, Package] = {}
@@ -160,18 +175,11 @@ def plan(request: Request) -> Source:
 def prepare(request: Request, source_commit: str, output: Path) -> None:
     if subprocess.check_output(["git", "status", "--porcelain"], text=True):
         raise ValueError("prepare requires a clean checkout")
-    path = Path(".releases") / f"{request.version}.json"
-    commit = ""
-    if path.exists():
-        source = Source.model_validate_json(path.read_text())
-        if source.branch != request.branch or source.version != request.version:
-            raise ValueError("this version was prepared on another release branch")
-        commit = subprocess.check_output(
-            ["git", "log", "-1", "--format=%H", "--", str(path)], text=True
-        ).strip()
+    path = STATE / f"{request.version}.json"
+    source = plan(request)
+    if source.release_commit:
         mode = "retry"
     else:
-        source = plan(request)
         if source.source_commit != source_commit:
             raise ValueError("the selected branch advanced; start a new workflow run")
         for package in source.packages:
@@ -187,9 +195,15 @@ def prepare(request: Request, source_commit: str, output: Path) -> None:
                 check=True,
             )
         subprocess.run(["uv", "lock"], check=True)
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(source.model_dump_json(indent=2) + "\n")
         mode = "new"
+        if not subprocess.check_output(["git", "diff", "--name-only"], text=True) and (
+            Version(request.version).is_prerelease
+            or f"## {request.version} - " in Path("CHANGELOG.md").read_text()
+        ):
+            source.release_commit = source.source_commit
+            mode = "source"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source.model_dump_json(indent=2) + "\n")
     previous = subprocess.run(
         [
             "git",
@@ -208,7 +222,7 @@ def prepare(request: Request, source_commit: str, output: Path) -> None:
     )
     with output.open("a") as handle:
         handle.write(
-            f"mode={mode}\nrelease_commit={commit}\nsource_commit={source.source_commit}\n"
+            f"mode={mode}\nrelease_commit={source.release_commit}\nsource_commit={source.source_commit}\n"
             f"plan={path.as_posix()}\nversion={request.version}\ntag=v{request.version}\n"
             f"is_prerelease={str(Version(request.version).is_prerelease).lower()}\n"
             f"previous_tag={previous.stdout.strip() if previous.returncode == 0 else ''}\n"
@@ -311,7 +325,7 @@ def build(path: Path, directory: Path) -> None:
         ]:
             raise ValueError(f"{name}: release requires one wheel and one sdist")
     manifest = Manifest(
-        **source.model_dump(),
+        **source.model_dump(exclude={"release_commit"}),
         release_commit=commit,
         source_date_epoch=epoch,
         files=files,
@@ -322,10 +336,12 @@ def build(path: Path, directory: Path) -> None:
 def load_release(directory: Path) -> Manifest:
     manifest = Manifest.model_validate_json((directory / "manifest.json").read_text())
     source = Source.model_validate_json(
-        (Path(".releases") / f"{manifest.version}.json").read_text()
+        (STATE / f"{manifest.version}.json").read_text()
     )
-    if Source.model_validate(manifest.model_dump()) != source:
-        raise ValueError("artifact manifest differs from the committed release plan")
+    if manifest.model_dump(
+        include=set(Source.model_fields) - {"release_commit"}
+    ) != source.model_dump(exclude={"release_commit"}):
+        raise ValueError("artifact manifest differs from the saved release plan")
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if manifest.release_commit != commit:
         raise ValueError("checkout is not the artifact's fixed release commit")
@@ -447,7 +463,7 @@ def publish(directory: Path, dry_run: bool) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("plan", "prepare"):
+    for name in ("plan", "prepare", "restore"):
         command = commands.add_parser(name)
         command.add_argument("version")
         command.add_argument("--branch", required=True)
@@ -456,6 +472,8 @@ def main() -> None:
         if name == "prepare":
             command.add_argument("--source", required=True)
             command.add_argument("--github-output", type=Path, required=True)
+        if name == "restore":
+            command.add_argument("--directory", type=Path, required=True)
     for name in ("build", "inspect", "verify", "publish"):
         command = commands.add_parser(name)
         command.add_argument("--directory", type=Path, default=Path("dist"))
@@ -466,7 +484,7 @@ def main() -> None:
         if name == "publish":
             command.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if args.command in {"plan", "prepare"}:
+    if args.command in {"plan", "prepare", "restore"}:
         request = Request(version=args.version, branch=args.branch)
         if args.command == "plan":
             source = plan(request)
@@ -474,8 +492,19 @@ def main() -> None:
             if args.github_output is not None:
                 with args.github_output.open("a") as handle:
                     handle.write(f"source_commit={source.source_commit}\n")
-        else:
+        elif args.command == "prepare":
             prepare(request, args.source, args.github_output)
+        else:
+            path = args.directory / f"{request.version}.json"
+            if not path.exists():
+                path = args.directory / "manifest.json"
+            source = Source.model_validate_json(path.read_text())
+            if source.branch != request.branch or source.version != request.version:
+                raise ValueError("saved plan belongs to another release")
+            STATE.mkdir(parents=True, exist_ok=True)
+            (STATE / f"{request.version}.json").write_text(
+                source.model_dump_json(indent=2) + "\n"
+            )
     elif args.command == "build":
         build(args.plan, args.directory)
     elif args.command == "inspect":

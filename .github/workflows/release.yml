@@ -45,6 +45,12 @@ jobs:
       - name: Setup workspace
         uses: ./.github/actions/setup
 
+      - name: Restore saved release plan
+        uses: ./.github/actions/restore-release-plan
+        with:
+          version: ${{ inputs.version }}
+          branch: ${{ github.ref_name }}
+
       - name: Validate release version and public packages
         id: source
         env:
@@ -127,6 +133,12 @@ jobs:
       - name: Setup workspace
         uses: ./.github/actions/setup
 
+      - name: Restore saved release plan
+        uses: ./.github/actions/restore-release-plan
+        with:
+          version: ${{ inputs.version }}
+          branch: ${{ github.ref_name }}
+
       - name: Prepare common release version
         id: release
         env:
@@ -136,6 +148,15 @@ jobs:
         run: |
           uv run --no-sync scripts/release.py prepare "$RELEASE_VERSION" \
             --branch "$RELEASE_BRANCH" --source "$SOURCE_COMMIT" --github-output "$GITHUB_OUTPUT"
+
+      - name: Save release plan before creating the version commit
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-plan-${{ steps.release.outputs.version }}
+          path: ${{ steps.release.outputs.plan }}
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Create verified release commit
         if: steps.release.outputs.mode == 'new'
@@ -168,7 +189,6 @@ jobs:
               }
             }
             const changed = (await exec.getExecOutput('git', ['diff', '--name-only', '-z'], {silent: true})).stdout.split('\0').filter(Boolean);
-            changed.push(process.env.RELEASE_PLAN);
             const input = {
               branch: {
                 repositoryNameWithOwner: context.repo.owner + '/' + context.repo.repo,
@@ -176,7 +196,7 @@ jobs:
               },
               expectedHeadOid: source.source_commit,
               message: {headline: 'Release ' + process.env.RELEASE_TAG},
-              fileChanges: {additions: [...new Set(changed)].map(path => ({
+              fileChanges: {additions: changed.map(path => ({
                 path, contents: fs.readFileSync(path).toString('base64'),
               }))},
             };
@@ -199,9 +219,9 @@ jobs:
           script: |
             const ref = process.env.NEW_COMMIT || process.env.EXISTING_COMMIT;
             const {data} = await github.rest.repos.getCommit({...context.repo, ref});
-            if (!data.commit.verification.verified || data.parents.length !== 1 ||
-                data.parents[0].sha !== process.env.SOURCE_COMMIT ||
-                data.commit.message.split('\n')[0] !== 'Release ' + process.env.RELEASE_TAG) {
+            if (!data.commit.verification.verified || (data.sha !== process.env.SOURCE_COMMIT && (
+                data.parents.length !== 1 || data.parents[0].sha !== process.env.SOURCE_COMMIT ||
+                data.commit.message.split('\n')[0] !== 'Release ' + process.env.RELEASE_TAG))) {
               throw new Error('The saved release commit does not match its source and verified signature');
             }
             core.setOutput('release_commit', data.sha);
@@ -242,6 +262,12 @@ jobs:
 
       - name: Setup workspace
         uses: ./.github/actions/setup
+
+      - name: Download release plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-plan-${{ needs.prepare.outputs.version }}
+          path: build/release/
 
       - name: Download saved distributions
         if: needs.prepare.outputs.artifact_id != ''
@@ -310,6 +336,12 @@ jobs:
       - name: Setup workspace
         uses: ./.github/actions/setup
 
+      - name: Download release plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-plan-${{ needs.prepare.outputs.version }}
+          path: build/release/
+
       - name: Download fixed distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -336,6 +368,12 @@ jobs:
 
       - name: Setup workspace
         uses: ./.github/actions/setup
+
+      - name: Download release plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-plan-${{ needs.prepare.outputs.version }}
+          path: build/release/
 
       - name: Download fixed distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
