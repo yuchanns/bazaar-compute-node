@@ -2148,6 +2148,26 @@ Codex 删除 env 别名配置及映射，子进程直接继承节点完整环境
 HarnessBuilder.inspect(workspace, timeout)，返回 HarnessInspection：可用性、CLI 版本、模型与推理档位、
 skills 和查询错误。删除运行实例的 describe 契约与实现，查询只依赖工作区，不要求 Agent 或会话。
 Codex 在指定工作区启动独立 app-server，初始化后执行 model/list 和 skills/list，沿公共预算释放所属进程。
+
+2026-10-22 MCP 查询补充（开发线程 `f76e00b5-364c-5de4-a648-b8c0a87738b0`）：
+现有 HarnessInspection 只有可用性、版本、模型／effort、skills 和查询错误，公共契约增加
+`mcp_servers: tuple[HarnessMcpServer, ...] = ()`。HarnessMcpServer 保存服务名、原生认证状态及
+工具清单；HarnessMcpTool 保存工具名、可选描述与实际 JSON input schema。
+依据 [OpenAI App Server API](https://developers.openai.com/codex/app-server#api-overview) 的
+`mcpServerStatus/list`，Codex 可在指定工作目录的独立 app-server 查询清单并分页，不需要创建
+Agent、thread 或模型 turn。工具来自原生发现结果，认证状态原样保留，不从配置推断连接成功。
+查询失败保留此前取得的元数据，并沿现有 HarnessInspection.error 报告原因。
+
+- [x] 补充公共 MCP inspect 类型、导出与说明，使用真实独立 MCP 清单核对契约，完成根目录检查后停下 review。
+- [ ] 公共契约可安装后，Codex inspect 接入原生分页查询，并在最小 MCP 场景核对服务与工具实际发现。
+
+公共契约实测使用新构建的 Harness wheel、现有 Codex provider wheel 和真实本地 notes MCP，
+Codex 0.163.0 原生查询返回 notes 服务、unsupported 认证状态和 save_note 工具的描述及参数 schema；
+这些原生数据通过新增公共类型校验。查询未创建 thread／模型 turn，也未执行保存便笺工具。
+所属 app-server 退出码为 0，自有存活子进程与待处理请求、交互全部为零。
+此结果验证公共类型与真实原生清单的匹配，具体 provider inspect 适配登记在下一项。
+Harness wheel／sdist、受影响包 Ruff、根目录 686 个文件格式检查与完整根目录 LSP 检查均通过。
+
 实测在未创建 thread／turn 时查询到 8 个模型、9 个 skills，包含隔离工作区实际创建的 skill，进程正常退出。
 CLI 版本通过实际 codex --version 读取；provider 的初始化 clientInfo 继续使用自身发行版本。
 本轮 Agent 独立 wheel／sdist 完整验收通过（217.83 秒），同时验证独立 provider 的公共 inspect。

@@ -3,9 +3,15 @@
 Enable the harness provider registry. Install a concrete harness provider separately.
 
 Call a registered builder's `inspect(workspace, timeout=...)` to query availability,
-the provider CLI version, models, reasoning efforts and workspace skills before
+the provider CLI version, models, reasoning efforts, workspace skills and MCP servers before
 creating an agent or session. The result is a `HarnessInspection`; its `error`
 field reports query failures alongside any metadata already returned.
+
+`HarnessInspection.mcp_servers` contains `HarnessMcpServer` entries with the server
+name, provider-reported authentication status and discovered `HarnessMcpTool` entries.
+Each tool carries its name, optional description and actual JSON input schema.
+Providers query their MCP inventory in the requested workspace and preserve partial
+results in the inspection if a later query fails.
 
 `SessionInput.approval_policy` uses `ApprovalPolicy.ON_REQUEST` or `NEVER`.
 `sandbox_policy` uses `SandboxPolicy.WORKSPACE_WRITE` or `DANGER_FULL_ACCESS`;
