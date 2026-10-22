@@ -700,15 +700,6 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     assert (
         "migrated node" in json.loads(await asyncio.to_thread(note.read_text))["text"]
     )
-    await launch(
-        str(python),
-        "-m",
-        "bazaar_compute_node",
-        "--config",
-        str(copied),
-        "contrib",
-        "sync",
-    )
     after = json.loads(
         await launch(str(python), "-m", "bazaar_contrib_manager.environment")
     )
@@ -757,8 +748,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         "bazaar_compute_node",
         "--config",
         str(copied),
-        "contrib",
-        "sync",
+        "example",
+        "write",
+        "remote package",
+        "--output",
+        str(note),
     )
     after = json.loads(
         await launch(str(python), "-m", "bazaar_contrib_manager.environment")
@@ -771,6 +765,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         )["url"]
         == url
     )
+    assert json.loads(await asyncio.to_thread(note.read_text))["text"]
 
     local = path / "local packages"
     await asyncio.to_thread(local.mkdir)
@@ -796,15 +791,6 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
                         f"bazaar-contrib-example[text] @ {artifact.as_uri()}"
                     )
             await store.write(payload, expected_revision=snapshot.revision)
-        await launch(
-            str(python),
-            "-m",
-            "bazaar_compute_node",
-            "--config",
-            str(copied),
-            "contrib",
-            "sync",
-        )
         await launch(
             str(python),
             "-m",

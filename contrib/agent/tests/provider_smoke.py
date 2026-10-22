@@ -33,9 +33,15 @@ from bazaar_core import (
     ContribHub,
     ContribSpec,
     Failed,
+    Running,
     load,
 )
-from bcn_agent_workbench import Attachment, HarnessBuilderParameters, configured
+from bcn_agent_workbench import (
+    Attachment,
+    HarnessBuilderParameters,
+    configured,
+    read_context_cache,
+)
 from bcn_agent_workbench import ChannelMessage as InboundMessage
 
 from bazaar_contrib_agent import AGENTS, AgentInstances
@@ -708,9 +714,15 @@ async def exercise(path: Path):
     )
     async with AsyncExitStack() as peers:
         async with ContribHub() as hub:
+
+            async def applied():
+                await registries[0].wait_applied()
+                for record in hub.snapshots:
+                    assert isinstance(record.state, Running), record
+
             candidate = hub.validate(composition)
             async with hub.enable(candidate) as enabled:
-                await registries[0].wait_applied()
+                await applied()
                 connected = {}
                 for name, workspace in workspaces.items():
                     peer = await connect(workspace / "channel.json", ready, hub)
@@ -797,7 +809,7 @@ async def exercise(path: Path):
                     }
                 )
                 await enabled.update(added)
-                await registries[0].wait_applied()
+                await applied()
                 assert registries[0].running["Cloud"] is identity
                 secondary = await connect(
                     workspaces["Cloud"] / "secondary.json", ready, hub
@@ -844,7 +856,7 @@ async def exercise(path: Path):
                 await enabled.update(removed)
                 await report(secondary, drafts["Cloud"])
                 saved = await finish(primary, pending)
-                await registries[0].wait_applied()
+                await applied()
                 reads = await asyncio.gather(
                     *(
                         asyncio.to_thread(item.read_text)
@@ -892,7 +904,7 @@ async def exercise(path: Path):
                 await enabled.update(revised)
                 await report(connected["Tifa"], drafts["Tifa"])
                 old = await finish(secondary, pending)
-                await registries[0].wait_applied()
+                await applied()
                 reads = await asyncio.gather(
                     *(
                         asyncio.to_thread(item.read_text)
@@ -978,7 +990,7 @@ async def exercise(path: Path):
                     }
                 )
                 await enabled.update(idle_config)
-                await registries[0].wait_applied()
+                await applied()
                 idle = await connect(idle_workspace / "channel.json", ready, hub)
                 peers.push_async_callback(idle.aclose)
                 _, packet = await submit(idle, idle_draft)
@@ -1041,9 +1053,10 @@ async def exercise(path: Path):
                 )
                 # The provider publishes its cache through a real owned file.
                 while (  # noqa: ASYNC110
-                    json.loads(
+                    (
                         await asyncio.to_thread(
-                            (context_workspace / "document-context.json").read_text
+                            read_context_cache,
+                            context_workspace / "document-context.json",
                         )
                     )["style"]
                     != style
@@ -1130,7 +1143,7 @@ async def exercise(path: Path):
                         }
                     )
                 )
-                await registries[0].wait_applied()
+                await applied()
                 assert await asyncio.to_thread(
                     (failure_workspace / "channel.closed").read_text
                 )
