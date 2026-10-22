@@ -760,7 +760,11 @@ class ContribManager:
                 version=f"=={version}",
             )
             await self._install(
-                id, plan.model_copy(update={"host": host}), plan, document
+                id,
+                plan.model_copy(update={"host": host}),
+                plan,
+                document,
+                upgrade=True,
             )
             await self._record(id, pending_restart=True)
 

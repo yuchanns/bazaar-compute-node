@@ -614,10 +614,28 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         versions = json.loads(
             await asyncio.to_thread((releases / "versions.json").read_text)
         )
+        wheel = next(
+            (path / "registry" / "one" / "files").glob(
+                f"bazaar_compute_node-{versions['target']}-*.whl"
+            )
+        )
+        index = (
+            path / "registry" / "one" / "simple" / "bazaar-compute-node" / "index.html"
+        )
+        digest = sha256(await asyncio.to_thread(wheel.read_bytes)).hexdigest()
+        print(f"Publish host {versions['target']} into the cached index", flush=True)
+        await asyncio.to_thread(
+            index.write_text,
+            await asyncio.to_thread(index.read_text)
+            + f'\n<a href="../../files/{wheel.name}#sha256={digest}">{wheel.name}</a>',
+        )
         upgraded = await manager.upgrade(versions["target"])
         assert upgraded.installed and upgraded.pending_restart, (
             upgraded.model_dump_json(indent=2)
         )
+        host = await manager.detail("bazaar-compute-node")
+        assert Version(host.version) > Version(versions["current"])
+        print(f"Host upgrade installed {host.version}", flush=True)
         candidate, _ = await manager.configuration.read()
         assert any(
             entry["config"].get("label") == "edited"

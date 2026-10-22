@@ -153,6 +153,8 @@ def wheels(tmp_path_factory):
                 "\n".join(
                     f'<a href="../../files/{file}#sha256={sha256((registry / "files" / file).read_bytes()).hexdigest()}">{file}</a>'
                     for file in files
+                    if name != "bazaar-compute-node"
+                    or f"-{versions['current']}-" in file
                 )
             )
     return path
