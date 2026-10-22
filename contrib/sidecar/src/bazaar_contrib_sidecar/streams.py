@@ -100,12 +100,11 @@ class Connection:
         except asyncio.CancelledError:
             if call.id in self.pending:
                 try:
-                    async with self.lock:
-                        if self.writer is not None and not self.writer.is_closing():
-                            self.writer.write(
-                                Cancel(id=call.id).model_dump_json().encode() + b"\n"
-                            )
-                            await self.writer.drain()
+                    if self.writer is not None and not self.writer.is_closing():
+                        # Queue the complete frame without waiting on backpressure.
+                        self.writer.write(
+                            Cancel(id=call.id).model_dump_json().encode() + b"\n"
+                        )
                 except OSError:
                     logger.exception("could not cancel sidecar call %s", call.id)
             raise

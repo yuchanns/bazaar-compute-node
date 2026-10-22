@@ -2113,6 +2113,9 @@ Collaboration 和 Agent 的独立 wheel／sdist 验收分别通过（63.91／339
 
 2026-10-22 已确认的 review 修订：共享 sidecar 流协议新增带调用编号的 Cancel 帧，
 客户端超时或任务取消时通知服务端取消该编号对应的分派任务，保留同连接的其他调用。
+参照 [Python asyncio streams](https://docs.python.org/3.15/library/asyncio-stream.html#asyncio.StreamWriter.write)，
+write 同步提交完整帧至传输缓冲，drain 等待流量控制。取消路径只同步写入 Cancel 帧，
+不等待发送锁或 drain，使传输背压下的请求仍能按原时限退出；服务端恢复读取后继续处理该帧。
 任务取消沿已有业务资源清理执行；已经提交的写入保持实际结果，调用方不自动重放。
 同一远端引用的 enter／exit／release 使用对象所属的锁串行执行，普通成员调用继续并发。
 参照 [Python asyncio.shield](https://docs.python.org/3.15/library/asyncio-task.html#shielding-from-cancellation)
