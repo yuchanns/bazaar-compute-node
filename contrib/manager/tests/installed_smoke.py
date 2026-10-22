@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import sys
+import time
 import tomllib
 from contextlib import asynccontextmanager
 from importlib.resources import files
@@ -35,6 +36,7 @@ from bazaar_contrib_manager import CONTRIB_MANAGER, ContribManager, Operation, P
 
 
 async def invoke(options: dict[str, Any], action) -> Any:
+    started = time.monotonic()
     selected: list[ContribManager] = []
 
     @asynccontextmanager
@@ -62,7 +64,16 @@ async def invoke(options: dict[str, Any], action) -> Any:
             )
         ),
     ):
-        return await action(selected[0])
+        ready = time.monotonic()
+        result = await action(selected[0])
+        completed = time.monotonic()
+    name = result.kind if isinstance(result, Operation) else "query"
+    print(
+        f"Manager {name}: startup {ready - started:.2f}s, "
+        f"action {completed - ready:.2f}s, shutdown {time.monotonic() - completed:.2f}s",
+        flush=True,
+    )
+    return result
 
 
 async def exercise(path: Path, source: str, other_source: str, releases: Path) -> None:
@@ -112,8 +123,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     print("Read installed manager catalogs", flush=True)
     initial = await checked(lambda manager: manager.catalog.indexes())
     assert any(index.entries for index in initial)
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
-    current = candidate.payload
+    current = tomllib.loads(await asyncio.to_thread(config.read_text))
     index = next(
         i
         for i, entry in enumerate(
@@ -149,8 +159,8 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     location = source.replace("/simple/", "/catalog.json")
     _, added_index = await cli("index", "add", location)
     assert location in added_index
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
-    assert location in candidate.payload["contrib_indexes"]
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
+    assert location in candidate["contrib_indexes"]
     entries = await checked(lambda manager: manager.catalog.entries())
     assert any(
         entry.package == "bazaar-contrib-example"
@@ -191,8 +201,8 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     assert added.installed and added.config_saved
     detail = await checked(lambda manager: manager.detail("example"))
     assert any(entry.config_schema for entry in detail.entries)
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
-    document = ConfigDocument.model_validate(candidate.payload)
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
+    document = ConfigDocument.model_validate(candidate)
     assert any(
         package.distribution == detail.package
         and Requirement(package.package).specifier.contains(detail.version)
@@ -391,13 +401,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         "labels.1.value=normal",
     )
     assert "example-file" in output
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
     index = next(
         i
         for i, entry in enumerate(
-            entry
-            for package in candidate.payload["contribs"]
-            for entry in package["enabled"]
+            entry for package in candidate["contribs"] for entry in package["enabled"]
         )
         if entry["entry"] == "example-file"
     )
@@ -411,18 +419,16 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         "--option",
         "labels.1.value=urgent",
     )
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
     entries = [
-        entry
-        for package in candidate.payload["contribs"]
-        for entry in package["enabled"]
+        entry for package in candidate["contribs"] for entry in package["enabled"]
     ]
     assert entries[index]["config"]["metadata"]["project"] == "studio"
     await cli("add", "example", "--source", source, "--enable")
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
     declaration = next(
         package
-        for package in candidate.payload["contribs"]
+        for package in candidate["contribs"]
         if ContribPackage.model_validate(package).distribution == detail.package
         and ContribPackage.model_validate(package).applies
     )
@@ -469,10 +475,10 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     note = json.loads(await asyncio.to_thread(output.read_text))
     assert text in note["text"] and tag in note["tags"]
     assert text in json.loads(result)["text"] and tag in json.loads(result)["tags"]
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
     assert any(
         entry["config"].get("path") == str(writer)
-        for package in candidate.payload["contribs"]
+        for package in candidate["contribs"]
         for entry in package["enabled"]
     )
     assert (await checked(lambda manager: manager.operation(added.id))).installed
@@ -598,10 +604,10 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     assert replaced.installed
     detail = await checked(lambda manager: manager.detail("example"))
     assert detail.version.startswith("0.2")
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
     assert any(
         entry["config"].get("label") == "edited"
-        for package in candidate.payload["contribs"]
+        for package in candidate["contribs"]
         for entry in package["enabled"]
     )
     # Edit the standard dependency syntax just as an operator edits the portable document.
@@ -821,12 +827,12 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         "example-consumer",
         "example-file",
     ):
-        candidate, _ = await checked(lambda manager: manager.configuration.read())
+        candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
         index = next(
             i
             for i, entry in enumerate(
                 entry
-                for package in candidate.payload["contribs"]
+                for package in candidate["contribs"]
                 for entry in package["enabled"]
             )
             if entry["entry"] == name
@@ -871,13 +877,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     await checked(lambda manager: manager.remove("bazaar-contrib-example-carrier"))
     await checked(lambda manager: manager.index(str(second), remove=True))
     await checked(lambda manager: manager.index(str(duplicate), remove=True))
-    candidate, _ = await checked(lambda manager: manager.configuration.read())
+    candidate = tomllib.loads(await asyncio.to_thread(config.read_text))
     index = next(
         i
         for i, entry in enumerate(
-            entry
-            for package in candidate.payload["contribs"]
-            for entry in package["enabled"]
+            entry for package in candidate["contribs"] for entry in package["enabled"]
         )
         if entry["entry"] == "contrib-manager"
     )

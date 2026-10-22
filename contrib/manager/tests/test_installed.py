@@ -18,6 +18,13 @@ lazy import tomli_w
 lazy from packaging.version import Version
 
 
+class PackageRegistry(SimpleHTTPRequestHandler):
+    def end_headers(self) -> None:
+        # Every release is built before this server starts and keeps its own URL.
+        self.send_header("Cache-Control", "public, max-age=3600, immutable")
+        super().end_headers()
+
+
 @pytest.fixture(scope="module")
 def wheels(tmp_path_factory):
     path = tmp_path_factory.mktemp("manager-releases")
@@ -151,7 +158,7 @@ async def test_real_installed_manager(
     wheels: Path, tmp_path: Path, deployment: str, workflow: str
 ):
     def setup():
-        handler = partial(SimpleHTTPRequestHandler, directory=str(wheels / "registry"))
+        handler = partial(PackageRegistry, directory=str(wheels / "registry"))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
