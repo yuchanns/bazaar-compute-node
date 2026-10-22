@@ -43,10 +43,6 @@ class HarnessBuilder(BaseModel):
     def entry(self) -> Contrib[Any]:
         return self.definition.entry
 
-    @property
-    def capabilities(self) -> tuple[str, ...]:
-        return self.definition.capabilities
-
     async def inspect(self, workspace: Path, *, timeout: float) -> HarnessInspection:
         """Query the provider without creating an Agent or a Harness session."""
         return await self.definition.inspect(workspace, timeout=timeout)
@@ -74,7 +70,6 @@ class HarnessBuilderConfig(BaseModel, ABC):
     kind: ClassVar[str]
     entity_model: ClassVar[type[BaseModel]]
     entry: ClassVar[Contrib[Any]]
-    capabilities: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     @abstractmethod

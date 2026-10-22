@@ -435,7 +435,6 @@ class ChannelBuilderParameters(ChannelBuilderConfig):
     kind: ClassVar[str] = "test-channel"
     entity_model: ClassVar[type[BaseModel]] = ChannelConfig
     entry: ClassVar[Contrib[Any]] = channel
-    capabilities: ClassVar[tuple[str, ...]] = ("receive", "send", "approval")
 
 
 @asynccontextmanager
@@ -803,7 +802,6 @@ class HarnessBuilderParameters(HarnessBuilderConfig):
     kind: ClassVar[str] = "document"
     entity_model: ClassVar[type[BaseModel]] = HarnessConfig
     entry: ClassVar[Contrib[Any]] = harness
-    capabilities: ClassVar[tuple[str, ...]] = ("document-report", "approval")
 
     @classmethod
     async def inspect(cls, workspace: Path, *, timeout: float) -> HarnessInspection:
