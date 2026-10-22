@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from functools import partial
 lazy import asyncio
 lazy import os
 lazy from pathlib import Path
 lazy from uuid import NAMESPACE_URL, uuid5
 
 from bazaar_contrib_sidecar import CLIENT, SERVER, Client
+from bazaar_contrib_sidecar.streams import Connection
 from bazaar_core import Context, Contrib
 from pydantic import BaseModel, ConfigDict, Field
 
-lazy from .transport import Channel, Listener
+lazy from .transport import Listener, connect
 
 __all__ = ["Config", "sidecar"]
 
@@ -33,8 +35,9 @@ async def lifespan(ctx: Context, config: Config):
             ).casefold()
         )
         endpoint = rf"\\.\pipe\bcn-sidecar-{uuid5(NAMESPACE_URL, directory).hex}"
-    channel = Channel(endpoint)
-    client = Client(channel.send, channel.aclose, timeout=config.timeout)
+
+    connection = Connection(partial(connect, endpoint))
+    client = Client(connection.send, connection.aclose, timeout=config.timeout)
     try:
         ctx.offer(SERVER, Listener(endpoint))
         ctx.offer(CLIENT, client)

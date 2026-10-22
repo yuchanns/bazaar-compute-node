@@ -12,7 +12,6 @@ from typing import Protocol
 from .models import (
     ApprovalRequest,
     ApprovalResult,
-    HarnessDescription,
     HarnessExpire,
     HarnessOutput,
     HarnessSession,
@@ -49,8 +48,6 @@ class HarnessSessionReconciliation:
 
 
 class Harness(Protocol):
-    async def describe(self, *, timeout: float) -> HarnessDescription: ...
-
     async def receive_event(self) -> HarnessExpire: ...
 
     async def start_session(

@@ -160,6 +160,9 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
             add(f"{provider.kind}-builder", package)
         item = agent.model_dump(mode="json")
         item["harness"] = item.pop("runtime")
+        for harness in item["harness"]:
+            if "sandbox_mode" in harness:
+                harness["sandbox_policy"] = harness.pop("sandbox_mode")
         agents.append(item)
         changes.append(
             FieldChange(

@@ -7,45 +7,52 @@ from enum import StrEnum
 
 class ProviderCallStatus(StrEnum):
     CONFIRMED = "confirmed"
-    QUEUED = "queued"
-    PARTIAL = "partial"
     FAILED = "failed"
-    UNKNOWN = "unknown"
+
+
+class HarnessFailureReason(StrEnum):
+    TIMEOUT = "timeout"
+    CONNECTION_LOST = "connection_lost"
+    INTERRUPTED = "interrupted"
+    UNAVAILABLE = "unavailable"
+    STATE_MISMATCH = "state_mismatch"
+    PROTOCOL = "protocol"
+    EXECUTION = "execution"
+    INTERNAL = "internal"
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessFailure:
+    """Why execution failed, independently of whether its result needs recovery."""
+
+    reason: HarnessFailureReason
+    message: str
+    needs_reconciliation: bool = False
+    code: int | str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderCallResult[ResultT]:
-    """Provider outcome that never treats an unconfirmed call as a success."""
+    """A confirmed call result or a failure with explicit recovery requirements."""
 
     status: ProviderCallStatus
     value: ResultT | None = None
-    error_kind: str | None = None
-    error_message: str | None = None
+    failure: HarnessFailure | None = None
     receipt: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.status in {
-            ProviderCallStatus.CONFIRMED,
-            ProviderCallStatus.QUEUED,
-        }:
+        if self.status is ProviderCallStatus.CONFIRMED:
             if self.value is None:
                 raise ValueError(
                     f"a {self.status.value} provider call requires a value"
                 )
-            if self.error_kind is not None or self.error_message is not None:
+            if self.failure is not None:
                 raise ValueError(
                     f"a {self.status.value} provider call cannot contain an error"
                 )
             return
 
-        if self.status is ProviderCallStatus.PARTIAL:
-            if self.value is None:
-                raise ValueError("a partial provider call requires a value")
-            if not self.error_kind:
-                raise ValueError("a partial provider call requires an error_kind")
-            return
-
         if self.value is not None:
             raise ValueError("an unconfirmed provider call cannot contain a value")
-        if not self.error_kind:
-            raise ValueError("an unconfirmed provider call requires an error_kind")
+        if self.failure is None:
+            raise ValueError("a failed provider call requires a failure")

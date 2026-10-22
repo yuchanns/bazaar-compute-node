@@ -5,17 +5,13 @@ description = "Persistent reminders, recurrence and agent wake scheduling"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
-dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-messages~=0.3.0rc1", "bazaar-contrib-audit~=0.3.0rc1", "bazaar-contrib-timer~=0.3.0rc1", "bazaar-contrib-storage~=0.3.0rc1", "bazaar-contrib-legacy-node-migrations~=0.3.0rc1", "bazaar-contrib-schema~=0.3.0rc1", "bazaar-contrib-invoke~=0.3.0rc1", "bazaar-contrib-sidecar~=0.3.0rc1", "click>=8.1.0", "jinja2>=3.1.6", "pydantic>=2.12.0", "tzdata>=2025.2; sys_platform == 'win32'"]
+dependencies = ["bazaar-core~=0.3.0rc1", "bazaar-contrib-messages~=0.3.0rc1", "bazaar-contrib-audit~=0.3.0rc1", "bazaar-contrib-timer~=0.3.0rc1", "bazaar-contrib-storage~=0.3.0rc1", "bazaar-contrib-legacy-node-migrations~=0.3.0rc1", "bazaar-contrib-schema~=0.3.0rc1", "pydantic>=2.12.0", "tzdata>=2025.2; sys_platform == 'win32'"]
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"
 
 [project.entry-points."bazaar_compute_node.contribs"]
 reminder = "bazaar_contrib_reminder:reminder"
-reminder-cli = "bazaar_contrib_reminder:commands"
-
-[project.entry-points."bazaar_compute_node.bcc_commands"]
-reminder = "bazaar_contrib_reminder:reminder_entry"
 
 [build-system]
 requires = ["uv_build>=0.13.0,<0.14.0"]

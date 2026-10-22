@@ -7,7 +7,9 @@ from ._format import echo, serialize_unfollow
 
 
 @click.group(help="Thread attention operations")
-def thread() -> None: ...
+@click.pass_context
+def thread(ctx: click.Context) -> None:
+    ctx.obj = MessageClient(ctx.obj.request)
 
 
 @thread.command(

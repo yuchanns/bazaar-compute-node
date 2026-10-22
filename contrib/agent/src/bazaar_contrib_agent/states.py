@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
-from bazaar_contrib_harness import HarnessSession
+from bazaar_contrib_harness import HarnessFailure, HarnessSession
 
 if TYPE_CHECKING:
     from .loop import Runtime
@@ -66,12 +66,12 @@ class Working(Bound):
 
 @dataclass(frozen=True, slots=True)
 class Recovering(Bound):
-    error: str
+    failure: HarnessFailure | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Failed:
-    error: str
+    failure: HarnessFailure
     binding: SessionBinding | None = None
 
 

@@ -16,8 +16,17 @@ from typing import Any
 from uuid import uuid7
 
 import tomli_w
+from bazaar_compute_node.boot import build
+from bazaar_compute_node.boot import node as application
+from bazaar_contrib_agent.tool import Tool
+from bazaar_contrib_config import CONFIGURATION, ConfigDocument, Configuration
 from bazaar_contrib_sidecar import CLIENT, Client, Remote, Symbol
-from bazaar_core import Context, Contrib, ContribEntry, ContribHub, ContribSpec, load
+from bazaar_core import (
+    Composition,
+    Context,
+    Contrib,
+    ContribEntry,
+)
 
 
 class Peer:
@@ -206,7 +215,6 @@ async def exercise(directory: Path):
         str(directory / "s") if os.name != "nt" else rf"\\.\pipe\bcn-messages-{uuid7()}"
     )
     os.environ["BCN_HOME"] = str(directory)
-    os.environ["BCN_ENDPOINT"] = endpoint
     native = "sidecar-windows" if os.name == "nt" else "sidecar-unix"
     config = directory / "config.toml"
     await asyncio.to_thread(
@@ -235,28 +243,33 @@ async def exercise(directory: Path):
         ),
     )
     clients: list[Client] = []
+    configurations: list[Configuration] = []
 
     @asynccontextmanager
     async def consumer(ctx: Context):
         clients.append(ctx.accept(CLIENT))
+        configurations.append(ctx.accept(CONFIGURATION))
         yield
 
-    composition = await asyncio.to_thread(
-        load, (ContribSpec(contrib=native, config={"endpoint": endpoint}),)
-    )
-    composition = composition.model_copy(
-        update={
-            "entries": (
-                *composition.entries,
-                ContribEntry(
-                    name="rpc-consumer",
-                    definition=Contrib(accepts=[CLIENT], lifespan=consumer),
-                ),
-            )
-        }
-    )
+    def select(document: ConfigDocument) -> Composition:
+        composition = build(document)
+        entry = ContribEntry(
+            name="rpc-consumer",
+            definition=Contrib(accepts=[CLIENT, CONFIGURATION], lifespan=consumer),
+        )
+        return composition.model_copy(
+            update={
+                "entries": (*composition.entries, entry),
+                "roots": (entry.name,),
+            }
+        )
 
-    async with node(config), ContribHub() as hub, hub.enable(composition):
+    async with (
+        node(config),
+        application(configer_options=(str(config),), start=select),
+        Tool(configurations[0]) as tool,
+    ):
+        os.environ["BCN_TOOL_CONFIG"] = str(tool.path)
         remote: Remote = await clients[0].context.call(
             "accept", Symbol("bazaar_contrib_messages:MESSAGES")
         )
@@ -560,7 +573,14 @@ async def exercise(directory: Path):
             for peer in peers.values():
                 await peer.aclose()
     # A new node reads the same durable history, with a fresh process-local draft set.
-    async with node(config):
+    clients.clear()
+    configurations.clear()
+    async with (
+        node(config),
+        application(configer_options=(str(config),), start=select),
+        Tool(configurations[0]) as tool,
+    ):
+        os.environ["BCN_TOOL_CONFIG"] = str(tool.path)
         history = await bcc(
             directory, "Cloud", "message", "read", "--target", "dm:@hanchin"
         )

@@ -1,90 +1,68 @@
-"""Start the selected contrib's native bcc command in an owned composition."""
+"""Run the Agent's fixed native commands through the configured sidecar."""
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 lazy import asyncio
 lazy import os
-lazy from collections.abc import Sequence
+lazy from collections.abc import Mapping, Sequence
+lazy from pathlib import Path
+lazy from types import SimpleNamespace
 
 import click
-from bazaar_contrib_invoke import COMMANDS, CommandCatalog, Commands
-from bazaar_core import (
-    Context,
-    Contrib,
-    ContribEntry,
-    ContribHub,
-    ContribSpec,
-    discover,
-    load,
-)
+from bazaar_contrib_invoke import Commands
+lazy from bazaar_contrib_messages import Actor, Actors, Agent, Mode
+
+lazy from .cli.messages.inbox import inbox
+lazy from .cli.messages.message import message
+lazy from .cli.messages.thread import thread
+lazy from .cli.reminder.reminder import reminder
+lazy from .tool import request
 
 
 async def dispatch(args: Sequence[str], *, prog_name: str | None) -> None:
-    catalog = await asyncio.to_thread(
-        lambda: CommandCatalog(
-            contribs=tuple(source.name for source in discover()),
-            entry_point_group="bazaar_compute_node.bcc_commands",
-            help=main.help,
-            epilog=main.epilog,
-            params=main.params,
-            context_settings={"help_option_names": ["-h", "--help"]},
-        )
+    commands = Commands(
+        help=main.help,
+        epilog=main.epilog,
+        params=main.params,
+        context_settings={"help_option_names": ["-h", "--help"]},
     )
-    entry = await asyncio.to_thread(catalog.select, args, prog_name=prog_name)
-    if entry is None:
-        return
-    composition = await asyncio.to_thread(
-        load,
-        (
-            ContribSpec(contrib="commands"),
-            *entry.dependencies,
-            ContribSpec(contrib=entry.contrib),
-        ),
-    )
-    selected: list[Commands] = []
+    for command in (message, thread, reminder):
+        commands.add_command(command)
+    actor: Actor | None = None
+    agent_id = os.environ.get("BCN_AGENT_ID")
+    mode = os.environ.get("BCN_AGENT_MODE")
+    if agent_id is not None and mode is not None:
+        actors = Actors(agent_id, Mode(mode))
+        if actor_id := os.environ.get("BCN_ACTOR_ID"):
+            actor = actors.resolve(actor_id)
+        elif actors.mode is Mode.DANGEROUS_INDIVIDUAL:
+            # The standalone launcher knows its Agent before a session is bound.
+            actor = Agent(agent_id)
+    if isinstance(actor, Agent):
+        commands.add_command(inbox)
 
-    @asynccontextmanager
-    async def observe(ctx: Context):
-        group = ctx.accept(COMMANDS)
-        group.help = main.help
-        group.epilog = main.epilog
-        group.context_settings = {
-            **group.context_settings,
-            "help_option_names": ["-h", "--help"],
-        }
-        group.params.extend(main.params)
-        selected.append(group)
-        yield
-
-    composition = composition.model_copy(
-        update={
-            "entries": (
-                *composition.entries,
-                ContribEntry(
-                    name="bcc-dispatch",
-                    definition=Contrib(accepts=[COMMANDS], lifespan=observe),
-                ),
-            ),
-        }
-    )
-    context = {
-        name: os.environ.get(variable)
-        for name, variable in (
-            ("agent_id", "BCN_AGENT_ID"),
-            ("mode", "BCN_AGENT_MODE"),
-            ("actor_id", "BCN_ACTOR_ID"),
-            ("session_id", "BCN_RUNTIME_SESSION_ID"),
-        )
-    }
-    failure: click.ClickException | click.exceptions.Exit | None = None
-    async with ContribHub() as hub, hub.enable(composition):
+    async def send(service: str, payload: Mapping[str, object]) -> Mapping[str, object]:
+        path = os.environ.get("BCN_TOOL_CONFIG")
+        if not path:
+            return {
+                "ok": False,
+                "code": "TOOL_CONFIG_REQUIRED",
+                "error": "BCN_TOOL_CONFIG is not set",
+            }
         try:
-            await selected[0].dispatch(args, prog_name=prog_name, obj=context)
-        except (click.ClickException, click.exceptions.Exit) as error:
-            failure = error
-    if failure is not None:
-        raise failure
+            return await request(Path(path), service, payload)
+        except Exception as error:  # noqa: BLE001 - Preserve the command error envelope for the CLI.
+            return {
+                "ok": False,
+                "code": "COMMAND_FAILED",
+                "error": str(error) or type(error).__name__,
+            }
+
+    await commands.dispatch(
+        args,
+        prog_name=prog_name,
+        obj=SimpleNamespace(request=send),
+    )
 
 
 @click.command(

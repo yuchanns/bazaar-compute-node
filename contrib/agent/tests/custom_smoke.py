@@ -2,9 +2,7 @@
 
 import asyncio
 import json
-import os
 from pathlib import Path
-from uuid import uuid7
 
 from bazaar_core import (
     CONTRIB_CHANGED,
@@ -15,6 +13,7 @@ from bazaar_core import (
     ContribSpec,
     load,
 )
+from bcn_agent_workbench import configured
 from provider_smoke import connect, report
 
 
@@ -27,11 +26,6 @@ async def exercise(path: Path):
     )
     brief = "You are the Friday edition assistant. Prepare editorial reports and request the editor's approval before saving."
     title = "Friday editorial desk"
-    os.environ["BCN_ENDPOINT"] = (
-        str(path / "sidecar.sock")
-        if os.name != "nt"
-        else "\\\\.\\pipe\\bcn-editor-" + str(uuid7())
-    )
     composition = await asyncio.to_thread(
         load,
         [
@@ -47,8 +41,8 @@ async def exercise(path: Path):
             ContribSpec(contrib="messages-node"),
             ContribSpec(contrib="sidecar"),
             ContribSpec(
-                contrib="sidecar-windows" if os.name == "nt" else "sidecar-unix",
-                config={"endpoint": os.environ["BCN_ENDPOINT"]},
+                contrib="sidecar-tcp",
+                config={"endpoint": str(path / "sidecar-port")},
             ),
             ContribSpec(
                 contrib="editor-agent",
@@ -62,6 +56,7 @@ async def exercise(path: Path):
             ),
         ],
     )
+    composition = await configured(path / "config.toml", composition)
     ready = asyncio.Event()
 
     def changed(ctx: Context, _):

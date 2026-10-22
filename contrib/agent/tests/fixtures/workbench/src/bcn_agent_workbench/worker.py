@@ -98,14 +98,6 @@ def main():
             emit("tool.completed", metadata=call | {"result": content})
             parts.append(content)
         text = "\n".join(parts) or prompt
-        statistics = subprocess.run(
-            [command, "document", "count"],
-            input=text,
-            text=True,
-            capture_output=True,
-            check=True,
-            encoding="utf-8",
-        )
         header = re.search(r"\[target=(.*?) msg=([^ ]+)", prompt)
         if header is None:
             raise ValueError("The conversation message has no reply address")
@@ -117,7 +109,8 @@ def main():
             "inbox": inbox.stdout,
             "agent_id": request["agent_id"],
             "session_id": turn["session_id"],
-            **json.loads(statistics.stdout),
+            "words": len(re.findall(r"\b\w+\b", text)),
+            "lines": len(text.splitlines()),
         }
         print(
             json.dumps(
@@ -169,14 +162,16 @@ def main():
         if decision["decision"] == "approved":
             call = {"id": str(uuid7()), "name": "file.write", "path": str(report)}
             emit("tool.started", metadata=call | {"arguments": data})
-            subprocess.run(
-                [command, "journal", "save", str(report)],
-                input=json.dumps(data),
-                text=True,
-                capture_output=True,
-                check=True,
-                encoding="utf-8",
-            )
+            data["context"] = {
+                name: os.environ.get(variable)
+                for name, variable in (
+                    ("agent_id", "BCN_AGENT_ID"),
+                    ("mode", "BCN_AGENT_MODE"),
+                    ("actor_id", "BCN_ACTOR_ID"),
+                    ("session_id", "BCN_RUNTIME_SESSION_ID"),
+                )
+            }
+            report.write_text(json.dumps(data) + "\n")
             emit("tool.completed", metadata=call | {"result": data})
             body = (
                 f"Saved {data['words']} words across {data['lines']} lines to {report}."

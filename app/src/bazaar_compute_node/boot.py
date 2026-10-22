@@ -73,6 +73,15 @@ def bootstrap(
                 f"{record.name}: {record.state}" for record in definitions.diagnostics
             )
         )
+    entries = []
+    for entry in definitions.entries:
+        config = entry.definition.validate_config(entry.config, context=definitions)
+        entries.append(
+            EnabledContrib(
+                entry=entry.name,
+                config=config.model_dump(mode="json") if config is not None else {},
+            )
+        )
     defaults = tomllib.loads(resource.joinpath("defaults.toml").read_text())
     return (
         definitions,
@@ -83,10 +92,7 @@ def bootstrap(
                 build,
                 environment=ConfigurationEnvironment(
                     hub="bazaar_core:ContribHub",
-                    entries=tuple(
-                        EnabledContrib(entry=entry.name, config=entry.config)
-                        for entry in definitions.entries
-                    ),
+                    entries=tuple(entries),
                 ),
                 start=start,
             ),

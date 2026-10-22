@@ -7,6 +7,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.15"
 dependencies = [
+    "bazaar-contrib-config~=0.3.0rc1",
     "bazaar-contrib-messages~=0.3.0rc1",
     "bazaar-contrib-collaboration~=0.3.0rc1",
     "bazaar-contrib-reminder~=0.3.0rc1",
@@ -18,6 +19,7 @@ dependencies = [
     "bazaar-contrib-audit~=0.3.0rc1",
     "bazaar-contrib-channel~=0.3.0rc1",
     "bazaar-contrib-harness~=0.3.0rc1",
+    "bazaar-contrib-sidecar~=0.3.0rc1",
     "bazaar-contrib-invoke~=0.3.0rc1",
     "click>=8.1.0",
     "jinja2>=3.1.6",

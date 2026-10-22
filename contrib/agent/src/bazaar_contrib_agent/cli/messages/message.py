@@ -18,7 +18,9 @@ from ._format import (
 
 
 @click.group(help="Message operations")
-def message() -> None: ...
+@click.pass_context
+def message(ctx: click.Context) -> None:
+    ctx.obj = MessageClient(ctx.obj.request)
 
 
 @message.command(

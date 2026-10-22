@@ -2,13 +2,13 @@
 
 import asyncio
 import json
-import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from bazaar_contrib_audit import AUDIT_EVENT, AuditEvent
 from bazaar_core import Context, Contrib, ContribEntry, ContribHub, ContribSpec, load
+from bcn_agent_workbench import configured
 from blockbuster import blockbuster_ctx
 
 from bazaar_contrib_agent import AGENTS, AgentInstances
@@ -17,10 +17,10 @@ from bazaar_contrib_agent import AGENTS, AgentInstances
 async def run():
     path = Path(sys.argv[1])
     payload = json.loads(await asyncio.to_thread(path.read_text))
-    os.environ["BCN_ENDPOINT"] = payload["endpoint"]
     composition = await asyncio.to_thread(
         load, [ContribSpec.model_validate(item) for item in payload["contribs"]]
     )
+    composition = await configured(path.with_suffix(".toml"), composition)
     services: list[AgentInstances] = []
 
     @asynccontextmanager

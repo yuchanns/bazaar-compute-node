@@ -1143,6 +1143,9 @@ run 的用户帮助使用：`Run the node, serving until it is stopped.`
 ### Task 8：sidecar 调用与节点基础接入
 
 Sidecar README 使用 V5 的 `package` 与 `enabled[].entry` 描述启用方式，与实际配置文档一致。
+2026-10-21 按已确认要求扩展并发调用：CLIENT 允许多个请求同时在途，具体实现决定连接方式。
+Unix／Windows／TCP 的 Call／Reply 流封套与共享读泵按 Task 12.1 的通信修订实现，
+公共 Request／Result 保持传输无关；单请求等待或取消不关闭其他调用共用的连接。
 
 本轮 review 节点为 sidecar 接口包、两个传输实现包及真实跨进程调用验收。`bazaar-contrib-sidecar` 定义
 `SERVER`、`CLIENT` 两个公共服务 key，并提供只接受 `SERVER` 的 `sidecar` 入口；它随完整配置组合进入 lifespan，
@@ -1474,10 +1477,9 @@ builder 配置以 ClassVar 声明 kind、entity_model、运行 Contrib 和能力
 
 ### Task 12.1：为 agent 注入 developer instruction 与 bcc
 
-bcc 根帮助保留原说明、`-h`／`--help` 和命令使用提示；实际命令仍由所属 contrib 登记。
-命令入口可按自身运行上下文导出声明或 None，invoke 跳过 None，不接入具体业务判断。
-Messages 仅在 dangerous_individual 模式提供 inbox；消息和 Reminder 的原生 CLI 在实际请求时
-才通过 Sidecar 获取所属服务，查看各级帮助不要求节点已经运行。
+bcc 根帮助保留原说明、`-h`／`--help` 和命令使用提示；原生 Click 命令、格式化和 bcc 模板归 Agent 工具包。
+按 0.2 直接导入并注册 message、thread 和 reminder 固定命令，在 dangerous_individual 模式提供 inbox；
+命令集合由 Agent 工具持有。查看各级帮助不要求节点已经运行。
 
 按 main `app/agent.py`、`app/wrapper.py`、`core/instruction.py`、`resources/developer_instructions.md`，
 以及 Codex `start_session`／Claude `_open_connection` 的实际时机，将默认 agent 的初始化上下文提前至消息能力之前交付。
@@ -1491,22 +1493,46 @@ harness、workspace、mode 与本次 session id；同一次 SessionInput 提供 
 环境将 wrapper 目录前置 PATH，携带 agent／mode、当前 actor 和 harness session 关联；provider 使用已收到的指令和环境创建实际进程或 SDK 会话。
 指令模板保留 main 的已有行为约束及 mode 分支，按[统一验收标准](#迁移实施与验收标准)删除 Agent ID 显示行、将 runtime session 显示为 Session，随 agent 的 wheel／sdist 发行；加载与渲染通过工作线程完成。
 
-bcc 复用 invoke 的 CommandCatalog／Commands 和 Contrib 生命周期登记机制，以独立 `bazaar_compute_node.bcc_commands`
-入口组发现每个功能包的 CommandEntry。入口组选择所需 CLI contrib，由该 contrib 注册自己的 native Click 二级命令；
+bcc 是 agent 注入给模型的工具。Agent 的执行生命周期接受公共 CONFIGURATION，
+将所选 ConfigurationEnvironment、默认文档和现有 build 的导入标识写入私有临时配置文件，
+通过 SessionInput.environment 的 BCN_TOOL_CONFIG 交给工具进程；文件随 Agent 执行生命周期释放。
+这一配置环境包含实际选择的配置载体、选项和版本服务，沿用 Configuration.preview 的跨进程装配表示。
+sidecar 的公共 Client 表达远端调用与资源生命周期，连接方式和所需配置由具体实现持有。
 命令帮助与新增实现说明统一使用 `contrib`／`contribs`。
-agent 负责 wrapper、命令启动和运行上下文。消息、thread、Reminder 的实际命令在所属后续任务消费公共服务及本次入口。
+
+2026-10-21 按进程边界修订：bcc 子进程用配置环境所指定的 Hub、真实配置载体和现有版本转换链，
+经 Hub.run 及 configuration 的 start 回调，把接受 CLIENT 的命令消费者作为唯一业务根。
+依赖选择和资源退出复用现有框架，所选 sidecar 实现直接提供 CLIENT 并持有实际连接。
+默认 Agent 和独立 editorial Agent 都接受 CONFIGURATION，在自己的 lifespan 持有 Tool，
+将 tool.path 交给 SessionInput.environment；bcc 的插件装配封装在 Agent 所属工具内。
+固定 message／inbox／thread／Reminder Click 命令、格式化和资源全部随 Agent 发行，
+只通过工具 request 回调使用公共 MESSAGES／REMINDER 服务；业务请求、身份／会话能力、结果和错误文案保持原行为。
+
+按 2026-10-21 确认，sidecar 的 CLIENT 允许多个调用同时在途并各自返回结果。
+公共 Request／Result／Failure 不携带流传输的关联字段；HTTP、gRPC 或串行底层实现自行决定调用方式。
+共享流协议在同一连接上支持多路复用：Call／Reply 封套携带相同的 UUID，内含原有 Request 与 Result／Failure，
+流客户端只用短锁保护惰性连接和完整帧写入，统一读取任务按 UUID 唤醒各请求，等待业务结果时不持锁。
+Unix socket、Windows named pipe 与真实 TCP 实现共用流协议收发；服务端在连接拥有的 TaskGroup 中并发分派请求，
+业务生命周期取消单个分派任务时，以同一编号返回 Failure，结束该调用的等待；其他请求继续运行。
+断开连接先取消并等待所属调用，再释放该连接的对象表与远端资源。
+Client 的请求可单独覆盖等待预算，默认继续使用所选实现的客户端配置。
+工具取得 CLIENT 后用公共 Client.request 获取目标服务并调用其 request，显式传 timeout=None，
+由既有业务 dispatcher 持有命令预算。bcc 调用结束或取消时，自己的 Hub 释放所选客户端及配置自举资源。
 
 使用现有独立安装的 TestChannel／文档 provider：自然用户输入建立真实 session，子进程收到实际指令与环境，
-通过注入 PATH 查找并运行 bcc，调用两个真实 contrib 命令完成 workspace 文件操作，覆盖两个 agent、会话重用／隔离与退出。
+通过注入 PATH 查找并运行固定 bcc 命令，查看消息、发送报告并登记 Reminder；
+文档子进程读取实际文件并保存报告，覆盖两个 agent、会话重用／隔离与退出。
 验证 wheel／sdist 内模板、wrapper 和公开入口均可用，保留原审批、失败后继续及关闭验收。
 
 - [x] 迁入默认指令资源与渲染、各平台 wrapper 生命周期，并在 harness session 创建前注入。
-- [x] 复用公共 invoke 机制提供可由其他 contrib 贡献二级命令的 bcc 入口；将实际 agent／actor／session 上下文交给命令。
+- [x] 通过原生 Click 固定注册 bcc 命令，将实际 agent／actor／session 上下文交给命令。
 - [x] 扩展现有真实 provider 独立安装验收，完成受影响检查、Ruff 和根目录 LSP，以新签名 commit 交付并停下 review。
 
 ### Task 13：为 agent 接入消息与会话
 
-命令调度器以明确状态控制接收和停止接收，in-flight 任务及排空 Event 保留实际资源与通知职责。 sidecar 客户端连接使用明确的打开／关闭状态，保留请求串行、超时与失败关闭行为。
+命令调度器以明确状态控制接收和停止接收，in-flight 任务及排空 Event 保留实际资源与通知职责。
+sidecar 客户端保留明确的打开／关闭状态；按本轮多路复用要求允许并发请求，
+单请求预算独立，连接故障向所属等待方返回错误，提供者退出统一关闭连接。
 
 公共 MessageStorage 提供所属 Thread 的送达游标，MessageService 提供按 Actor 的非消费式未读汇总；
 底层沿用既有 read_unread_summary 的同一快照和最新端采样，供 Agent 通知与去重使用。
@@ -1543,18 +1569,17 @@ messages-node 接受公共 DB、Node 迁移就绪服务和 AUDIT，持有自己�
 仅允许已批准的 Actor 表达、调用方可选预算与逐段消息持久化差异。完整运行受影响 contrib 验收。
 
 从 `app/command.py`、`core/serialize.py` 及 `cmd/bcc/{message,inbox,thread,_client,_format}.py` 迁入对应请求校验、
-结果序列化和 native Click 命令，通过 invoke 的 bcc 入口及公共 sidecar CLIENT 消费服务。
-Click 的正常命令退出在 Hub 生命周期释放后交回原顶层，避免草稿拦截多出 ExceptionGroup 错误文案。
-现有 bcc 只加载 commands 与命令所属入口，无法满足 CLIENT 的实际依赖；CommandEntry 因此携带显式
-ContribSpec 依赖，由 bcc 与命令一起交给既有 load。messages 的命令入口声明本机传输，并将原 BCN_ENDPOINT
-交给其 endpoint 配置；传输仍由公共 provider lifespan 创建和关闭。
+结果序列化；native Click 命令和格式化迁入 Agent 工具，通过所选 CLIENT 调用公共服务。
+Click 的正常命令退出在工具连接释放后交回原顶层，保留草稿拦截的原错误文案。
+CLIENT 的依赖和消费由 Agent 所属 bcc 工具在自己的进程中声明及装配。
+本机传输的选择和 endpoint 解析留在所选 sidecar 实现内。
 消息服务的进程边界沿用 CommandDispatcher 的 Actor 解析和 session binding validator，绑定由调用它的 agent 提供。
-sidecar 只负责转发框架调用，消息 CLI 通过连接所属的通用消费入口请求 `MESSAGES`；
+sidecar 只负责转发框架调用，Agent 所属工具通过连接所属的通用消费入口请求 `MESSAGES`；
 消息依赖由该调用方声明并由框架绑定，sidecar 的定义及发行依赖均不包含消息或配置业务。
 V4→V5 保留 `if old.agent`，只在旧配置存在 agent 时加入 messages-node 和 legacy-node-migrations；
 只有 BCS 等其他 contrib 的节点继续使用通用通信入口。
 删除 `services` 配置模型、服务 key 字符串解析及全部默认／转换／测试用法。
-原 `resources/command/`、消息相关 `resources/bcc/` 与 TextTemplate 保留格式化逻辑和模板字节，随独立包发行。
+原 `resources/command/` 保留业务格式化与模板字节；bcc 的输出格式化、相关模板及 TextTemplate 随 Agent 工具发行。
 channel 公共契约按原发送链路补齐 DM 地址、目标显示及交付信息，消息服务消费实际 channel，不持有 provider 生命周期。
 `app/attachments.py` 的 AttachmentMaterializer 迁入 messages-node，保留暂存、原子落盘、文件上限及按数据库引用清理。
 消息导入通过异步资源作用域逐块消费字节流，并在成功、失败和取消时关闭；保留附件类别及原始失败说明。
@@ -1571,15 +1596,15 @@ MessageService 的公开附件导入入口通过 Pydantic 校验调用方提供�
 省略 ID 时仍生成 UUID，复用 Agent 预留身份及现有下载、落库流程。
 check／read 在下载期间显示文件名、ID 和 `state:downloading`，完成后显示既有路径或失败格式，重启读取仍使用已保存引用。
 默认配置选择 messages-node 及其数据依赖，由 manager 恢复；Python 发行依赖由实际导入接口的消费者声明。
-messages-node 的 CLI 依赖公共 sidecar 契约；所选原生传输实现由配置声明并由 manager 恢复，消息包的发行依赖只声明实际导入的接口包。
+Agent 所属消息 CLI 消费工具提供的请求回调；所选 sidecar 实现由节点配置声明并由 manager 恢复，各包的发行依赖只声明实际导入的接口包。
 独立安装验收在准备工作区及附件路径前解析临时根目录，沿用实际 agent 的工作区路径语义，覆盖 macOS 的 `/tmp` 符号链接。
 
 按消息接口拆分 review，`bazaar-contrib-messages` 保留 Actor、消息／会话／附件、状态及请求和结果类型，
 定义 `Messages`、`MessageService`、`MessageStorage`、写入作用域 `MessageSession` 和 `ThreadConcurrency` 公共 Protocol，
 并导出同一 `MESSAGES` key。契约包只声明直接使用的 core 和 channel 公共依赖。
 `bazaar-contrib-messages-node` 承接现有 MessageStore／repository、消息业务、发送与草稿、附件管理、
-会话锁实现、命令分派、bcc 命令、模板及绑定生命周期，通过 `messages-node` 入口提供 `MESSAGES`；
-`messages-cli` 与 message／inbox／thread 命令入口随实现发行。公共模型和模板保持原内容。
+会话锁实现、命令分派、业务模板及绑定生命周期，通过 `messages-node` 入口提供 `MESSAGES`；
+message／inbox／thread 原生 Click 命令及输出模板随 Agent 工具发行。公共模型和模板保持原内容。
 消费者通过 `accepts` 声明服务依赖，装配方通过 `ctx.accept(MESSAGES)` 获取服务并绑定某个 Agent，
 将产生的消息服务显式传给 collaboration；内部调用直接使用接口对象。
 `MessageStorage.write` 把通用会话读取和保存交给同一次数据库 writer 回调，
@@ -1693,8 +1718,8 @@ scheduler 以 frozen／slots 状态联合类型直接携带驱动任务和 front
 `reminder_schedule.py`、`core/orchestration/reminder.py` 和 `commands/reminders.py` 为业务来源，
 迁入 `bazaar-contrib-reminder`；模型状态、请求与结果、周期计算、单全局 frontier 定时器、
 60 秒时钟复核、失败重试、到期批处理、版本并发保护、不可用提醒取消及启动未读恢复保持原行为。
-`cmd/bcc/reminder.py`、`app/resource_dispatch.py` 的 Reminder 分支及 `_format.py` 的 Reminder 格式化迁入该包，
-三个 Reminder bcc 模板和错误模板逐字保留；命令经独立 `reminder-cli` 消费入口访问 REMINDER 公共服务。
+`app/resource_dispatch.py` 的 Reminder 分支迁入该包；`cmd/bcc/reminder.py`、Reminder 格式化、
+三个 bcc 模板及错误模板逐字迁入 Agent 工具，通过所选 CLIENT 访问 REMINDER 公共服务。
 命令完成事件由 `_append_audit` 统一写入审计服务。
 Reminder 消费公共 `Timer` 契约时，参数和成员统一命名为 `timer`。
 Reminder 的绑定参数、scheduler 参数与内部唤醒转发统一命名为 `wake`。
@@ -2083,6 +2108,136 @@ Collaboration 和 Agent 的独立 wheel／sdist 验收分别通过（63.91／339
 - [ ] Linux、macOS、Windows 独立 CI 完成安装与生命周期验收；native service 验收在隔离 CI runner 执行。
 - [ ] 登记本仓库 app、core 与首阶段 contrib 的发行清单、共同版本和正式依赖；验证入口组、contribs 配置、contrib_indexes 与 bcn contrib 命令采用统一命名。
 - [ ] 在当前特性分支提交，review 通过后按依赖合入 `0.3`，以该集成点开始路线图下一分支。
+
+#### 当前 Codex 迁移与公共契约修订
+
+2026-10-22 已确认的 review 修订：共享 sidecar 流协议新增带调用编号的 Cancel 帧，
+客户端超时或任务取消时通知服务端取消该编号对应的分派任务，保留同连接的其他调用。
+任务取消沿已有业务资源清理执行；已经提交的写入保持实际结果，调用方不自动重放。
+同一远端引用的 enter／exit／release 使用对象所属的锁串行执行，普通成员调用继续并发。
+参照 [Python asyncio.shield](https://docs.python.org/3.15/library/asyncio-task.html#shielding-from-cancellation)
+及 core 现有清理逻辑，保留清理任务的强引用，等待所属 AsyncExitStack 清理完成后传播调用取消；
+清理结束前保留 entered 归属，连接退出也使用同一清理规则。
+补充独立安装的实际 TCP、文件和 timer-wheel 验证：exit／release 在取消或超时、随后断开连接时，
+计时清理正常到期、文件关闭，期间普通查询继续完成；并发进入与释放文件也完成清理。
+本轮原生／TCP 四项独立安装验收通过（18.52 秒），Agent wheel／sdist 完整验收通过（234.19 秒），
+Ruff／格式及根目录完整 LSP 通过。
+文件配置载体在 Pydantic 输入边界解析绝对路径，自举环境序列化校验后的参数，
+使工作区内启动的 bcc 使用原启动目录所选择的同一配置文件。
+公共 ApprovalRoute 统一核对返回的 request_id 和批准范围；超出 allowed_scopes 时记录原因并拒绝。
+Agent 自动批准从请求支持的范围中选最小范围，Codex provider 只处理原生协议映射。
+独立安装验收覆盖真实流连接的单次取消与其他调用并行、相对配置路径的跨进程读取及范围审批。
+Codex 发行入口仅公开 codex-builder，实例由 builder 在 Agent 局部组合中创建，安装后使用裸 --enable。
+Codex 删除 env 别名配置及映射，子进程直接继承节点完整环境，再覆盖 SessionInput.environment。
+
+通用插件查询沿 0.2 IRuntimeBuilder.inspect／models 的实际能力补齐，按 2026-10-22 确认合并为
+HarnessBuilder.inspect(workspace, timeout)，返回 HarnessInspection：可用性、CLI 版本、模型与推理档位、
+skills 和查询错误。删除运行实例的 describe 契约与实现，查询只依赖工作区，不要求 Agent 或会话。
+Codex 在指定工作区启动独立 app-server，初始化后执行 model/list 和 skills/list，沿公共预算释放所属进程。
+实测在未创建 thread／turn 时查询到 8 个模型、9 个 skills，包含隔离工作区实际创建的 skill，进程正常退出。
+CLI 版本通过实际 codex --version 读取；provider 的初始化 clientInfo 继续使用自身发行版本。
+本轮 Agent 独立 wheel／sdist 完整验收通过（217.83 秒），同时验证独立 provider 的公共 inspect。
+真实原生／TCP sidecar 四项验收通过（24.99 秒），取消和超时均终止远端计时器等待并保留其他调用。
+真实应用从 ./node.toml 启动后，在另一工作目录重建 bcc 配置载体，读取到相同修订；文件载体两项用例通过。
+Ruff／格式及根目录完整 LSP 通过。独立 Codex wheel 的 inspect 和三类实际文件变更验证通过：
+工作区 AGENTS.md、CODEX_HOME/AGENTS.md、skills 均将原生通知转换为 HarnessExpire，所属进程正常退出。
+此轮原生验证只创建 thread，不启动模型 turn；正在执行及后台任务期间的会话延后替换沿 0.2 的规则核对。
+
+2026-10-21 的调整统一维护在本 0.3 计划。审批沿用 0.2 的 approved／rejected 与
+dangerous_individual 无条件自动批准；按已确认要求增加 `ApprovalScope(StrEnum)`，
+取值为 ONCE／SESSION／ALWAYS。ApprovalRequest.allowed_scopes 是可选范围元组，默认只有 ONCE；
+ApprovalResult.scope 是实际选择，默认 ONCE。具体 provider 只提供原生请求支持的范围，并负责协议转换。
+新增的 MCP 工具审批沿用同一审批路由，由请求所属 Agent 和 Channel 处理。
+
+独立 Codex provider 使用公共 HARNESS／HARNESS_BUILDERS 与 core 契约，保留 0.2 的持久 app-server、
+线程／turn、原生模型与 skills 发现、workspace-write 与默认网络访问、dangerousFullAccess、
+steering、后台状态、两次初始化／恢复尝试、上下文监听、原始事件与时间戳及所属进程退出。
+子进程继承完整节点环境，再覆盖显式命名绑定及 SessionInput.environment；
+provider 原样接受 agent 给出的工具通信配置，原生 Codex 协议细节留在独立实现。
+以只读保留的 0.2 Codex 源码和 Codex 0.163.0 实际 app-server schema 为对照。
+
+2026-10-22 review 修订：上游按实际 Actor 实例选定 `ApprovalPolicy.ON_REQUEST／NEVER`、
+`SandboxPolicy.WORKSPACE_WRITE／DANGER_FULL_ACCESS` 及每个 Harness 的 network_access，
+在 AgentLoop.start_session 通过 SessionInput 传入实际策略，HarnessInput 仅保留 Agent 及工作区输入。
+配置在 Actors 构造处转换一次；AgentLoop 不再保存整份 AgentConfig，内部业务不传递 mode。
+ApprovalRoute 直接持有所属 Actor，Agent 实例无条件批准，Thread 实例沿人类消息路由审批。
+bcc 在进程入口将环境身份恢复为 Actor，按 Agent 实例登记 inbox；独立 launcher 保留会话绑定前的帮助输出。
+指令模板和进程环境在输出边界将实际 Actor 转回 mode；provider 不接收 mode。
+Codex 的 thread/start、thread/resume 和 turn/start 只转换策略枚举与原生参数，后续 Claude 同样消费这些策略。
+Agent 所属 HarnessConfig 保存各项沙箱／网络设置；具体 provider 配置只读取自身字段，默认忽略未使用字段。
+按 2026-10-22 review 移除 provider 的 extra="forbid" 及上游为其新增的策略字段过滤；
+V4→V5 将历史 runtime.sandbox_mode 映射为 sandbox_policy，逐个保留 Harness 的网络设置。
+未支持的交互记录日志并返回原生默认回复，审批默认拒绝；版本读取 provider 自身已安装发行元数据。
+逐项对照 0.2 的请求／审批预算、两次初始化和恢复、60%／20%／10% 退出阶段及会话归属检查；
+删除 provider 自设的 60 秒默认清理预算，使用所属连接实际收到的调用预算，避免跨会话共用最后一次调用的值。
+移除未使用的 32 行 stderr 截断，改为原生日志；bcc 配置边界使用 Pydantic，移除内部重复的类型防御。
+Actor 修订后 Agent 独立 wheel／sdist 场景通过（219.37 秒），覆盖实际配置选择的原生和 TCP sidecar；
+两种身份在绑定会话及独立 launcher 中共 18 次实际帮助调用通过，inbox 按 Agent 实例可见；
+历史配置转换 3 个用例通过，迁移后的多 Harness 不同策略通过实际 Codex builder 的配置校验；
+Ruff、根目录完整 LSP、provider 联合源码检查及 workflow 检查通过。
+
+先完成上文 Task 12.1 的 bcc 通信边界修订，沿原生 Click 入口验证帮助、stdin、附件、
+消息／thread／Reminder、会话能力及工具资源退出。真实外部 provider 验收继续使用 TCP TestChannel，
+由其注入自然用户请求、观察真实输出和处理审批；实际 MCP 出版服务读取草稿并写出回执。
+验证授权范围、dangerous_individual、消息实际送达、steer、连续会话、环境继承、恢复、上下文刷新和进程清理。
+开发联调使用独立外层 bcn-dev 项目，以 workspace = "../bcn" 引用 BCN 成员，独立 provider 使用相邻可编辑源码。
+
+- [x] 完成 Agent 所属 bcc 工具按实际配置装配 CLIENT 及调用方迁移，验证独立安装与真实命令，然后停下 review。
+- [ ] 完成 Codex 的 0.2 行为对照与真实控制面联调，分别维护 BCN／provider 草稿 PR，明确已完成和待完成验收。
+- [ ] 人工 review 与合入后，通过既有流程发行 rc2，再提高 provider 的已发布依赖下限并完成独立安装与真实模型 CI。
+
+2026-10-21 本轮 Linux 独立安装验收通过：Agent 的 wheel／sdist 完整场景耗时 258.11 秒，
+默认 Agent 使用配置中的原生 sidecar，替换 Agent 使用配置中的真实 TCP sidecar；
+bcc 均从同一真实配置载体装配 CLIENT，完成命令、审批、报告交付、热更新、恢复及在途退出。
+Messages 与 Reminder 的 wheel／sdist 场景分别通过（57.63 秒、49.55 秒），控制客户端也由实际配置装配。
+仅安装 Agent 及公共依赖的独立环境通过两个模式的固定命令帮助；Ruff、格式检查及根目录 LSP 通过。
+真实 Codex 的既有节点已完成出版、追加输入、连续对话、app-server 恢复、上下文刷新和实际消息送达，
+且正常退出并清理所属进程。该节点使用修订前的工具启动方式和 20000 压缩阈值；
+当前装配方式及 24576 配置的新节点验收继续单独完成。
+
+provider CI 使用最新 Codex 和已合入的 setup-ai-gateway Action，消费其标准环境变量与模型输出。
+按本轮确认，CI 在隔离 CODEX_HOME/config.toml 顶层统一配置 model_context_window=32768、
+model_auto_compact_token_limit=24576，所有测试会话读取这一全局配置。
+依据 [Codex 配置参考](https://developers.openai.com/codex/config-reference/)，前者表达实际模型窗口，
+后者触发原生历史自动压缩；保持该设置归 CI 应用准备流程，provider 沿用 Codex 原生配置加载。
+独立安装沿用 uv 应用安装、插件安装和实际 bcn run；发行和合入在人工 review 后进行。
+
+### 2026-10-22：Harness 失败原因与恢复控制
+
+依据本开发线程 8f08e554-14b0-510d-88d0-7653735761b4 的确认及
+090c2b84-3116-5a02-950f-7fa713e02c9b 对重试行为的要求，统一执行失败的表达及传播。
+已核对 v0.2.3 与只读 0.2 实现：orchestrator._recover_turn 在 RECOVERING 时恢复原会话，
+_hand_turn_to_another_runtime 对 failed／unknown 选择本轮未尝试的执行器，cancelled 不切换；
+Codex.reconcile_session 仅对进程退出、进程不可用及请求超时作两次尝试，协议及原生拒绝直接失败。
+0.3 已确认的会话建立重试次数、退避、执行前不可用恢复及一小时隔离保持现有规则。
+
+Harness 的调用结果保留 confirmed／failed；失败输出统一使用 failed，携带 frozen／slots
+HarnessFailure。reason 使用少量公共枚举：timeout、connection_lost、interrupted、unavailable、
+state_mismatch、protocol、execution、internal；message 和可选 code 保留实际错误。
+needs_reconciliation 独立表达原先 unknown 所携带的结果确认需求；Agent 据此进入 Recovering，
+不根据原因名称或文案猜测是否恢复。恢复失败更新最终失败，避免被初次断联等错误覆盖。
+原生 interrupted 是明确失败；主动取消继续走 cancelled。Codex 恢复的异常重试分支保持原有边界。
+会话及轮次身份冲突、缺少执行上下文和审批处理对象分别说明实际原因，关闭所属进程沿现有规则执行。
+按本线程 96a3531b-2bd5-5a4f-ab17-a16ea84086ff 的补充，中间失败及恢复／重试只写 Audit／Log；
+Channel 最终只展示最后一次失败的原因、原始错误及可选错误码，恢复或重试成功正常结束。
+
+- [x] 完成公共失败结构、Agent 全链路与 Codex 映射，验证恢复及执行器切换、独立发行包和根目录完整 LSP，然后停下 review。
+
+Agent 独立 wheel／sdist 完整验收通过，实际文件写入冲突验证另一执行器完成、最后失败反馈和后续请求成功；
+已有执行前不可用恢复、上下文刷新、后台保护、审批和取消退出继续通过。Codex 独立 wheel／sdist 的真实
+model/list 查询在所属进程组暂停时超时，恢复进程后再次查询成功，实际进程退出按 connection_lost 报告；
+这些传输验证没有启动模型 turn。Ruff、格式、根目录完整 LSP、provider 联合源码检查及发行包构建通过。
+0.2 重试相关 8 个方法与 v0.2.3 发布标签 AST 一致，旧源码保留只读。
+
+Windows CI 发现新增反馈验收直接匹配完整路径，未考虑原生 traceback 对反斜杠的转义。
+验收改为核对最终失败的会话目录名及文件名，既保留对最后一次失败归属的验证，也独立于平台的路径表示。
+
+按 PR #114 的后续复审补齐输出边界：HarnessOutput 仅允许 failed 携带 HarnessFailure；
+最终失败发送到 Channel 前，使用本次尝试保存的会话绑定脱敏错误消息、文本和字符串错误码，
+脱敏不再依赖关闭后的会话状态，终态事件与错误反馈使用相同的脱敏结果。
+provider 继续按已确认约定忽略未使用字段，上游不剥离公共执行策略。
+本轮修正的独立 Agent wheel／sdist 完整验收、根目录完整 LSP 及 Ruff 检查通过；
+真实 Codex builder 的两组沙箱／网络配置通过公共校验和组合。
 
 ## 后续安全待办
 

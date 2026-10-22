@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import os
-import sys
 from collections.abc import AsyncIterator, Mapping
-from contextlib import AsyncExitStack, asynccontextmanager
-from copy import copy
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from bazaar_contrib_audit import AUDIT, Audit
-from bazaar_contrib_invoke import COMMANDS, CommandEntry
 from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
 from bazaar_contrib_messages import (
     MESSAGES,
     Actors,
     Agent,
     MessageSession,
-    Mode,
     SessionBindingValidator,
     ThreadConcurrency,
 )
@@ -25,10 +20,9 @@ from bazaar_contrib_messages.operations import UnreadMessageOwner
 from bazaar_contrib_schema import SCHEMA
 from bazaar_contrib_storage import DB, Database, Session
 from bazaar_contrib_timer import TIMER, Timer
-from bazaar_core import Context, Contrib, ContribSpec
+from bazaar_core import Context, Contrib
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 lazy from bazaar_contrib_channel import Channel
-lazy from bazaar_contrib_sidecar import CLIENT
 
 from .attachments import AttachmentMaterializer
 from .concurrency import ThreadLockRegistry
@@ -38,10 +32,6 @@ from .repository.unread import list_unread_message_owners
 from .schema import MODULE
 from .service import NodeMessageService
 from .store import MessageStore
-lazy from .cli._client import MessageClient
-lazy from .cli.inbox import inbox
-lazy from .cli.message import message
-lazy from .cli.thread import thread
 
 __all__ = [
     "MESSAGES",
@@ -51,11 +41,7 @@ __all__ = [
     "NodeMessageService",
     "NodeMessages",
     "ThreadLockRegistry",
-    "commands",
-    "inbox_entry",
-    "message_entry",
     "messages",
-    "thread_entry",
 ]
 
 
@@ -143,53 +129,8 @@ async def lifespan(ctx: Context):
         yield
 
 
-@asynccontextmanager
-async def cli_lifespan(ctx: Context):
-    client = ctx.accept(CLIENT)
-    timeout = client.timeout
-    client.timeout = None
-    try:
-        async with AsyncExitStack() as stack:
-            groups = [message, thread]
-            if os.environ.get("BCN_AGENT_MODE") == Mode.DANGEROUS_INDIVIDUAL.value:
-                groups.append(inbox)
-            for group in groups:
-                group = copy(group)
-                group.context_settings = {
-                    **group.context_settings,
-                    "obj": MessageClient(client.context),
-                }
-                stack.enter_context(ctx.accept(COMMANDS).register(group))
-            yield
-    finally:
-        client.timeout = timeout
-
-
 messages = Contrib(
     accepts=[SCHEMA, LEGACY_NODE_MIGRATIONS, DB, AUDIT, TIMER],
     offers=[MESSAGES],
     lifespan=lifespan,
-)
-commands = Contrib(accepts=[CLIENT, COMMANDS], lifespan=cli_lifespan)
-_TRANSPORT = ContribSpec(
-    contrib="sidecar-windows" if sys.platform == "win32" else "sidecar-unix",
-    config={"endpoint": os.environ.get("BCN_ENDPOINT")},
-)
-message_entry = CommandEntry(
-    contrib="messages-cli", help="Message operations", dependencies=(_TRANSPORT,)
-)
-thread_entry = CommandEntry(
-    contrib="messages-cli",
-    help="Thread attention operations",
-    dependencies=(_TRANSPORT,),
-)
-
-inbox_entry = (
-    CommandEntry(
-        contrib="messages-cli",
-        help="Inbox target summary operations",
-        dependencies=(_TRANSPORT,),
-    )
-    if os.environ.get("BCN_AGENT_MODE") == Mode.DANGEROUS_INDIVIDUAL.value
-    else None
 )
