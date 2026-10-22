@@ -128,12 +128,27 @@ class HarnessSkill(BaseModel):
     source: str
 
 
+class HarnessMcpTool(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    description: str | None = None
+    input_schema: dict[str, JsonValue]
+
+
+class HarnessMcpServer(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str
+    auth_status: str | None = None
+    tools: tuple[HarnessMcpTool, ...] = ()
+
+
 class HarnessInspection(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     available: bool
     version: str | None = None
     models: tuple[HarnessModel, ...] = ()
     skills: tuple[HarnessSkill, ...] = ()
+    mcp_servers: tuple[HarnessMcpServer, ...] = ()
     error: str | None = None
 
 

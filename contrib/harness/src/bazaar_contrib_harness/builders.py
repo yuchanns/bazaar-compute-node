@@ -74,7 +74,7 @@ class HarnessBuilderConfig(BaseModel, ABC):
     @classmethod
     @abstractmethod
     async def inspect(cls, workspace: Path, *, timeout: float) -> HarnessInspection:
-        """Report availability, version, models and workspace skills."""
+        """Report availability, version, models, workspace skills and MCP servers."""
 
     @classmethod
     def builder(cls) -> HarnessBuilder:
