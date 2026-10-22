@@ -56,7 +56,6 @@ async def test_real_agent_commands(
 ):
     def setup():
         import subprocess
-        import sys
         import threading
         from functools import partial
         from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -127,14 +126,7 @@ async def test_real_agent_commands(
                 "pip",
                 "install",
                 "--python",
-                str(
-                    prefix
-                    / (
-                        "Scripts/python.exe"
-                        if sys.platform == "win32"
-                        else "bin/python"
-                    )
-                ),
+                str(prefix),
                 "--index",
                 source,
                 "bazaar-compute-node",
@@ -149,8 +141,13 @@ async def test_real_agent_commands(
             thread.join()
             raise
         return (
-            prefix
-            / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python"),
+            subprocess.run(
+                ["uv", "python", "find", "--no-project", str(prefix)],
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
             environment,
             source,
             server,

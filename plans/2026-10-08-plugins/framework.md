@@ -1816,6 +1816,8 @@ PEP 440 的 compatible release 允许该下限之后的 RC、正式版及 0.3.x�
 manager 官方索引由共享 uv.lock 生成包名和来源，不单独写版本，随工作区 lock 更新核对生成产物。
 core 的 `API_VERSION = "0.3"` 表示公共框架契约版本，继续用于现有 API 兼容判断。
 manager 的独立安装流程以真实 RC wheel 验证首次安装、依赖恢复及后续正式版本升级，保持原包安装、配置保存、运行应用流程。
+安装夹具从当前 app 元数据读取起始版本，并生成下一补丁版本的真实 wheel；首次安装选择升级目标之前的包，升级和新环境恢复共用同一目标，随 RC 发行自动推进。
+应用、manager、agent-command 和共享 sidecar 安装验收通过 `uv python find` 定位隔离环境的解释器，不拼接操作系统专用的可执行文件路径。
 在隔离 tool／venv 和本地真实包索引完成 wheel／sdist、默认配置和历史配置转换的独立安装验收，
 核对全部内部包元数据、原第三方要求和锁中已选第三方版本，执行受影响检查、Ruff 与根 Pyright LSP。
 参考：[Python 包版本约束](https://packaging.python.org/en/latest/specifications/version-specifiers/#compatible-release)、

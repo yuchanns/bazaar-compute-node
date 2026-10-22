@@ -562,7 +562,10 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         await manager.configuration.commit(
             candidate.payload, expected_revision=manager.configuration.snapshot.revision
         )
-        upgraded = await manager.upgrade("0.3.1")
+        versions = json.loads(
+            await asyncio.to_thread((releases / "versions.json").read_text)
+        )
+        upgraded = await manager.upgrade(versions["target"])
         assert upgraded.installed and upgraded.pending_restart, (
             upgraded.model_dump_json(indent=2)
         )
@@ -626,9 +629,6 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     }
     tool = Path(os.environ["UV_TOOL_DIR"]) / "bazaar-compute-node" == Path(sys.prefix)
     prefix = migrated / ("tools/bazaar-compute-node" if tool else "environment")
-    python = prefix / (
-        "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
-    )
 
     async def launch(*arguments: str):
         process = await asyncio.create_subprocess_exec(
@@ -651,7 +651,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             "3.15",
             "--index",
             source,
-            "bazaar-compute-node==0.3.1",
+            "bazaar-compute-node",
         )
     else:
         await launch("uv", "venv", "--python", "3.15", str(prefix))
@@ -660,11 +660,12 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             "pip",
             "install",
             "--python",
-            str(python),
+            str(prefix),
             "--index",
             source,
-            "bazaar-compute-node==0.3.1",
+            "bazaar-compute-node",
         )
+    python = (await launch("uv", "python", "find", "--no-project", str(prefix))).strip()
     before = json.loads(
         await launch(str(python), "-m", "bazaar_contrib_manager.environment")
     )

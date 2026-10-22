@@ -3,7 +3,6 @@
 lazy import asyncio
 lazy import os
 lazy import subprocess
-lazy import sys
 lazy from pathlib import Path
 
 
@@ -76,8 +75,13 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
             check=True,
             capture_output=True,
         )
-        executable = environment / (
-            "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+        executable = Path(
+            subprocess.run(
+                ["uv", "python", "find", "--no-project", str(environment)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
         )
         subprocess.run(
             [

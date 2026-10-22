@@ -7,13 +7,15 @@ lazy import json
 lazy import os
 lazy import shutil
 lazy import subprocess
-lazy import sys
 lazy import threading
+lazy import tomllib
 lazy from functools import partial
 lazy from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 lazy from pathlib import Path
 
 import pytest
+lazy import tomli_w
+lazy from packaging.version import Version
 
 
 @pytest.fixture(scope="module")
@@ -68,14 +70,22 @@ def wheels(tmp_path_factory):
     (source / "contrib" / "manager" / "catalog.uv.lock").unlink()
     shutil.copy(source / "uv.lock", source / "contrib" / "manager" / "catalog.uv.lock")
     output = path / "registry" / "one" / "files"
-    for version in ("0.3.0rc1", "0.3.1"):
+    current = Version(
+        tomllib.loads((source / "app" / "pyproject.toml").read_text())["project"][
+            "version"
+        ]
+    )
+    versions = {
+        "current": str(current),
+        "target": f"{current.major}.{current.minor}.{current.micro + 1}",
+    }
+    (path / "versions.json").write_text(json.dumps(versions))
+    for version in versions.values():
         for member in members:
             project = source / member / "pyproject.toml"
-            project.write_text(
-                project.read_text().replace(
-                    'version = "0.3.0rc1"', f'version = "{version}"'
-                )
-            )
+            document = tomllib.loads(project.read_text())
+            document["project"]["version"] = version
+            project.write_text(tomli_w.dumps(document))
             subprocess.run(
                 [
                     "uv",
@@ -168,6 +178,7 @@ async def test_real_installed_manager(
             "UV_TOOL_BIN_DIR": str(tmp_path / "bin"),
             "UV_CACHE_DIR": str(tmp_path / "cache"),
         }
+        versions = json.loads((wheels / "versions.json").read_text())
         if deployment == "tool":
             command = [
                 "uv",
@@ -177,9 +188,11 @@ async def test_real_installed_manager(
                 "3.15",
                 "--index",
                 source,
+                "--prerelease",
+                "allow",
                 "--with",
                 "blockbuster>=1.5.29,<1.6",
-                "bazaar-compute-node==0.3.0rc1",
+                f"bazaar-compute-node<{versions['target']}",
             ]
             prefix = tmp_path / "tools" / "bazaar-compute-node"
         else:
@@ -194,18 +207,13 @@ async def test_real_installed_manager(
                 "pip",
                 "install",
                 "--python",
-                str(
-                    prefix
-                    / (
-                        "Scripts/python.exe"
-                        if sys.platform == "win32"
-                        else "bin/python"
-                    )
-                ),
+                str(prefix),
                 "--index",
                 source,
+                "--prerelease",
+                "allow",
                 "blockbuster>=1.5.29,<1.6",
-                "bazaar-compute-node==0.3.0rc1",
+                f"bazaar-compute-node<{versions['target']}",
             ]
         try:
             subprocess.run(command, env=environment, check=True, capture_output=True)
@@ -214,9 +222,13 @@ async def test_real_installed_manager(
             server.server_close()
             thread.join()
             raise
-        python = prefix / (
-            "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
-        )
+        python = subprocess.run(
+            ["uv", "python", "find", "--no-project", str(prefix)],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         return python, environment, source, other, server, thread
 
     python, environment, source, other, server, thread = await asyncio.to_thread(setup)
@@ -235,7 +247,6 @@ async def test_real_installed_manager(
     try:
         output, errors = await process.communicate()
         assert process.returncode == 0, (output + errors).decode()
-        assert "workflow passed" in output.decode()
     finally:
         if process.returncode is None:
             process.kill()

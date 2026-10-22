@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 lazy import asyncio
-lazy import os
 lazy import subprocess
 lazy from pathlib import Path
 
@@ -56,9 +55,12 @@ def environment(tmp_path_factory):
         check=True,
         capture_output=True,
     )
-    python = (
-        directory / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    )
+    python = subprocess.run(
+        ["uv", "python", "find", "--no-project", str(directory / "venv")],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     subprocess.run(
         [
             "uv",
