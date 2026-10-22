@@ -37,12 +37,9 @@ async def distributions(tmp_path_factory) -> Path:
             str(output),
             cwd=path,
             env=environment,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
         )
         try:
-            stdout, _ = await process.communicate()
-            assert process.returncode == 0, stdout.decode()
+            assert await process.wait() == 0
         finally:
             if process.returncode is None:
                 process.terminate()
@@ -119,7 +116,6 @@ async def test_real_agent_commands(
             subprocess.run(
                 ["uv", "venv", "--python", "3.15", str(prefix)],
                 check=True,
-                capture_output=True,
             )
             command = [
                 "uv",
@@ -134,7 +130,7 @@ async def test_real_agent_commands(
                 *requirements,
             ]
         try:
-            subprocess.run(command, env=environment, check=True, capture_output=True)
+            subprocess.run(command, env=environment, check=True)
         except BaseException:
             server.shutdown()
             server.server_close()
@@ -164,12 +160,9 @@ async def test_real_agent_commands(
         str(tests),
         cwd=tmp_path,
         env=environment,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        output, _ = await process.communicate()
-        assert process.returncode == 0, output.decode()
+        assert await process.wait() == 0
     finally:
         if process.returncode is None:
             process.terminate()

@@ -204,8 +204,11 @@ async def exercise(path: Path):
     report = await asyncio.to_thread((path / "shared.txt").read_text)
     assert "observed Cloud" in report and "observed Tifa" in report
     assert "shared continues" in report and "shared released" in report
+    print("Exercise installed agent providers", flush=True)
     await exercise_providers(path / "providers")
+    print("Exercise custom agent composition", flush=True)
     await exercise_custom(path / "editor")
+    print("Exercise agent process recovery", flush=True)
     await exercise_recovery(path / "recovery")
 
 

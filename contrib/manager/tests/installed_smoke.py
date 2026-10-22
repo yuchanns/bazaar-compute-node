@@ -92,6 +92,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         return result
 
     async def cli(*arguments: str, config: Path = config):
+        print("bcn --config", config, "contrib", *arguments, flush=True)
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -104,9 +105,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             stderr=asyncio.subprocess.PIPE,
         )
         output, errors = await process.communicate()
+        print((output + errors).decode(), end="", flush=True)
         assert process.returncode == 0, (output + errors).decode()
         return output.decode(), errors.decode()
 
+    print("Read installed manager catalogs", flush=True)
     initial = await checked(lambda manager: manager.catalog.indexes())
     assert any(index.entries for index in initial)
     candidate, _ = await checked(lambda manager: manager.configuration.read())
@@ -183,6 +186,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         package = await manager.catalog.select("example", source=source)
         return await manager.add(package)
 
+    print("Install example from its local package index", flush=True)
     added = await checked(install)
     assert added.installed and added.config_saved
     detail = await checked(lambda manager: manager.detail("example"))
@@ -589,6 +593,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         )
         return await manager.add(package)
 
+    print("Change installed example package source", flush=True)
     replaced = await checked(change_source)
     assert replaced.installed
     detail = await checked(lambda manager: manager.detail("example"))
@@ -631,6 +636,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     prefix = migrated / ("tools/bazaar-compute-node" if tool else "environment")
 
     async def launch(*arguments: str):
+        print("Run", *arguments, flush=True)
         process = await asyncio.create_subprocess_exec(
             *arguments,
             env=environment,
@@ -639,6 +645,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             stderr=asyncio.subprocess.PIPE,
         )
         output, errors = await process.communicate()
+        print((output + errors).decode(), end="", flush=True)
         assert process.returncode == 0, (output + errors).decode()
         return output.decode()
 
@@ -872,6 +879,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     )
     assert protected.error and protected.phase == "failed"
     assert (await checked(lambda manager: manager.detail("example-carrier"))).entries
+    print("Remove installed example packages", flush=True)
     removed = await checked(lambda manager: manager.remove("bazaar-contrib-example"))
     assert removed.installed
     await checked(lambda manager: manager.remove("bazaar-contrib-example-carrier"))

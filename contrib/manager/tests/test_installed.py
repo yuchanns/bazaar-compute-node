@@ -98,7 +98,6 @@ def wheels(tmp_path_factory):
                     str(output),
                 ],
                 check=True,
-                capture_output=True,
             )
     for number, version in (("one", "0.1.0"), ("two", "0.2.0")):
         fixture = path / f"example-{number}"
@@ -116,7 +115,6 @@ def wheels(tmp_path_factory):
                 str(path / "registry" / number / "files"),
             ],
             check=True,
-            capture_output=True,
         )
     fixture = path / "carrier"
     shutil.copytree(Path(__file__).parent / "fixtures" / "carrier", fixture)
@@ -131,7 +129,6 @@ def wheels(tmp_path_factory):
             str(output),
         ],
         check=True,
-        capture_output=True,
     )
     for number in ("one", "two"):
         registry = path / "registry" / number
@@ -200,7 +197,6 @@ async def test_real_installed_manager(
             subprocess.run(
                 ["uv", "venv", "--python", "3.15", str(prefix)],
                 check=True,
-                capture_output=True,
             )
             command = [
                 "uv",
@@ -216,7 +212,7 @@ async def test_real_installed_manager(
                 f"bazaar-compute-node<{versions['target']}",
             ]
         try:
-            subprocess.run(command, env=environment, check=True, capture_output=True)
+            subprocess.run(command, env=environment, check=True)
         except BaseException:
             server.shutdown()
             server.server_close()
@@ -241,12 +237,9 @@ async def test_real_installed_manager(
         str(wheels),
         env=environment,
         cwd=tmp_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
     )
     try:
-        output, errors = await process.communicate()
-        assert process.returncode == 0, (output + errors).decode()
+        assert await process.wait() == 0
     finally:
         if process.returncode is None:
             process.kill()

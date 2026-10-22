@@ -35,7 +35,6 @@ def environment(tmp_path_factory):
             ["uv", "build", "--wheel", "--package", package, "--out-dir", str(wheels)],
             cwd=root,
             check=True,
-            capture_output=True,
         )
     subprocess.run(
         [
@@ -48,17 +47,15 @@ def environment(tmp_path_factory):
             str(wheels),
         ],
         check=True,
-        capture_output=True,
     )
     subprocess.run(
         ["uv", "venv", "--python", "3.15", str(directory / "venv")],
         check=True,
-        capture_output=True,
     )
     python = subprocess.run(
         ["uv", "python", "find", "--no-project", str(directory / "venv")],
         check=True,
-        capture_output=True,
+        stdout=subprocess.PIPE,
         text=True,
     ).stdout.strip()
     subprocess.run(
@@ -71,7 +68,6 @@ def environment(tmp_path_factory):
             *map(str, wheels.glob("*.whl")),
         ],
         check=True,
-        capture_output=True,
     )
     return python, directory
 
@@ -92,14 +88,12 @@ async def test_installed_consumers_and_native_lifecycles(environment, script, ar
         str(Path(__file__).with_name(script + ".py")),
         *args,
         cwd=directory,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        output, _ = await process.communicate()
+        await process.wait()
     except BaseException:
         if process.returncode is None:
             process.kill()
         await process.wait()
         raise
-    assert process.returncode == 0, output.decode()
+    assert process.returncode == 0
