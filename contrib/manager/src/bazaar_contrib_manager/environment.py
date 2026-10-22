@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+lazy import argparse
 lazy import json
 lazy import sys
+lazy from importlib import invalidate_caches
 lazy from importlib.metadata import distributions
 lazy from pathlib import Path
 
@@ -13,12 +15,16 @@ lazy from packaging.utils import canonicalize_name
 lazy from .contracts import EntryInfo, EnvironmentInfo, InstalledPackage
 
 
-def inspect() -> EnvironmentInfo:
+def inspect(*, definitions: bool = True) -> EnvironmentInfo:
+    invalidate_caches()
     packages: list[InstalledPackage] = []
     for distribution in distributions():
         entries: list[EntryInfo] = []
         for point in distribution.entry_points:
             if point.group != CONTRIB_GROUP:
+                continue
+            if not definitions:
+                entries.append(EntryInfo(name=point.name, value=point.value))
                 continue
             try:
                 definition = point.load()
@@ -61,4 +67,7 @@ def inspect() -> EnvironmentInfo:
 
 
 if __name__ == "__main__":
-    print(inspect().model_dump_json())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--metadata-only", action="store_true")
+    arguments = parser.parse_args()
+    print(inspect(definitions=not arguments.metadata_only).model_dump_json())

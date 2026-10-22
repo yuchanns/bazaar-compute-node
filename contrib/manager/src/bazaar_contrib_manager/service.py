@@ -491,11 +491,11 @@ class ContribManager:
         lock = await self.packages.resolve(plan, path, upgrade=upgrade)
         await self._record(id, phase="preflight")
         python = await self.packages.stage(lock)
-        installed = await self.packages.inspect(python)
+        expected = await self.packages.inspect(python, definitions=False)
         if pin is not None:
             version = next(
                 package.version
-                for package in installed.packages
+                for package in expected.packages
                 if package.package == pin
             )
             entries = []
@@ -510,7 +510,7 @@ class ContribManager:
         preview = await self.configuration.preview(
             python, payload=document.model_dump(mode="json")
         )
-        names = {package.package for package in installed.packages}
+        names = {package.package for package in expected.packages}
         missing = [
             package
             for package in preview.candidate.required_packages
@@ -534,17 +534,16 @@ class ContribManager:
                 plan, path / "migration", upgrade=upgrade
             )
             python = await self.packages.stage(lock)
+            expected = await self.packages.inspect(python, definitions=False)
             preview = await self.configuration.preview(
                 python, payload=document.model_dump(mode="json")
             )
         if preview.error:
             raise ManagementError(preview.error)
-        if removed is not None:
-            installed = await self.packages.inspect(python)
-            if any(package.package == removed for package in installed.packages):
-                raise ManagementError(
-                    "another package still requires this distribution"
-                )
+        if removed is not None and any(
+            package.package == removed for package in expected.packages
+        ):
+            raise ManagementError("another package still requires this distribution")
         current = await self.configuration.store.read()
         if (current.revision if current is not None else None) != preview.revision:
             raise ConfigConflict(
@@ -585,7 +584,6 @@ class ContribManager:
             raise
         installed = await self.packages.inspect()
         versions = {package.package: package.version for package in installed.packages}
-        expected = await self.packages.inspect(python)
         mismatched = [
             package.package
             for package in expected.packages
