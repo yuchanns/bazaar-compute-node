@@ -38,10 +38,6 @@ class ChannelBuilder(BaseModel):
     def entry(self) -> Contrib[Any]:
         return self.definition.entry
 
-    @property
-    def capabilities(self) -> tuple[str, ...]:
-        return self.definition.capabilities
-
     def compose(self, values: dict[str, Any], input: ChannelInput) -> Composition:
         config = self.entity_model.model_validate(values)
         return Composition(
@@ -65,7 +61,6 @@ class ChannelBuilderConfig(BaseModel):
     kind: ClassVar[str]
     entity_model: ClassVar[type[BaseModel]]
     entry: ClassVar[Contrib[Any]]
-    capabilities: ClassVar[tuple[str, ...]] = ()
 
     @classmethod
     def builder(cls) -> ChannelBuilder:

@@ -90,7 +90,7 @@ provider 的 builder 用于发现、配置和创建实例，连接或进程由�
 | `bazaar-contrib-storage` | `Database`、`BackendRegistry`、`STORAGE`、`DB`、`backend_key(name)`，数据／schema／显式查询／事务契约；`storage` 和 `database` 两入口，默认共享 | 全部数据库实现和持久化业务模块 | 3 | 默认、server |
 | `bazaar-contrib-timer` | timer 接口、`TIMER`、定时句柄和到期／取消结果 | 时间轮、Reminder、agent、channel / harness、管理和远程模块 | 2 | 默认、server 的依赖 |
 | `bazaar-contrib-channel` | `Channel`、`ChannelBuilder`、输入／发送／回执／审批模型与 `CHANNEL_BUILDERS`；附带 `channel-builders` 共享注册入口 | agent、渠道 provider、渠道编辑器 | 7 | 默认；web 的编辑器依赖 |
-| `bazaar-contrib-harness` | `Harness`、`HarnessBuilder`、会话／turn／输出／审批／能力模型与 `HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 7 | 默认 |
+| `bazaar-contrib-harness` | `Harness`、`HarnessBuilder`、会话／turn／输出／审批与发现模型、`HARNESS_BUILDERS`；附带 `harness-builders` 共享注册入口 | agent、Codex／Claude Code 等执行 provider、模型查询 | 7 | 默认 |
 
 这些包导出公共契约和可直接调用的公共逻辑，通过 `import` 使用。
 `bazaar-contrib-storage` 还声明 `storage`、`database`：前者提供后端注册表，后者按配置提供 DB。
@@ -216,7 +216,7 @@ agent 校验审批与当前 session／turn 及原 request_id 的关联；不匹�
 agent 将 harness 输出映射为 channel 请求；公共 harness 包依赖 core，公共 channel 包依赖 core 与 harness 的共用审批契约，具体 SDK 类型在 provider 内部转换。
 
 两个公共包分别提供 共享 `channel-builders`／`harness-builders`，导出 `CHANNEL_BUILDERS`／`HARNESS_BUILDERS` 服务 key。
-builder 登记 provider 标识、配置模型、运行入口及能力查询；默认 agent 根据自己的配置选择已启用定义，通过登记契约校验实体参数并构造实例条目与 provider 服务绑定。
+builder 登记 provider 标识、配置模型与运行入口；HarnessBuilder 通过 inspect 查询模型和 skills。默认 agent 根据自己的配置选择已启用定义，通过登记契约校验实体参数并构造实例条目与 provider 服务绑定。
 公共 `ChannelBuilderConfig`／`HarnessBuilderConfig` 基类以 `ClassVar` 导出 kind、entity_model 与运行入口；具体 builder 的 Pydantic 配置类声明这些元信息，候选从已安装入口定义取得模型，在资源启动前校验实体参数。
 公共包还导出按 kind 缓存的 `channel_builder_key(kind)`／`harness_builder_key(kind)`，具体 builder 提供对应 key，agent 按配置声明所选 builder 依赖，确认其已启用后装配。
 具体 channel 实例在 lifespan 中持有连接，具体 harness 实例在 lifespan 中持有进程／会话；agent 通过 local 启用各私有子组合，持有框架启用句柄，并以句柄的 typed 服务引用连接执行实例。框架维护内部绑定和生命周期，运行输入只包含业务上下文。

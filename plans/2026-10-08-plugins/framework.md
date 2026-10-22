@@ -1456,7 +1456,7 @@ steer_turn 接受当前 session、turn、纯文本通知及 timeout，仅在 pro
 has_background_job 查询所属 session 的后台工作；receive_event 接收 HarnessExpire，通知执行端在安全时机更新会话上下文。
 连接、进程和事件接收任务仍由 provider 的普通 lifespan 管理，Agent 在 Task16 消费完整契约。
 
-builder 配置以 ClassVar 声明 kind、entity_model、运行 Contrib 和能力；共享注册入口按 kind 提供 builder key。core 的普通配置校验通过 Pydantic ValidationInfo.context 提供当前候选及现有外部声明组成的 Composition，agent 的配置模型从其中读取 builder 元信息，以实体模型预检选定参数。该上下文只含声明，沿用现有建图与生命周期流程。
+builder 配置以 ClassVar 声明 kind、entity_model 和运行 Contrib；共享注册入口按 kind 提供 builder key。provider 通过既有方法的返回结果和事件表达实际执行行为。core 的普通配置校验通过 Pydantic ValidationInfo.context 提供当前候选及现有外部声明组成的 Composition，agent 的配置模型从其中读取 builder 元信息，以实体模型预检选定参数。该上下文只含声明，沿用现有建图与生命周期流程。
 
 公开 compose 接受 agent 配置和所选 builder 声明，构造实体。实体先提供 AGENT 并 yield，再由所属 TaskGroup 启动各 provider 子组合；每个子组合通过 local=(CHANNEL_INPUT, CHANNEL) 或 local=(HARNESS_INPUT, HARNESS) 建立私有范围，运行输入只包含业务上下文。agent 持有所选 provider 的 Enablement 句柄；执行实例通过句柄的 ref(CHANNEL)／ref(HARNESS) 声明依赖，在子组合就绪后消费输入、调用所选 harness、转发事件和渠道审批，并由 core 既有依赖图先停止执行消费者。按 main 的 _consume_events／_forward 转发输出并在终态结束当前流，文本事件保留为事件，失败事件保留为 turn 终态；消息发送及完整故障状态随所属业务任务迁入。退出先结束执行流与会话，再退出 provider 子组合，最后释放实体。身份、工作区和现有配置保留在 agent 包。
 
