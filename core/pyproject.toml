@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-core"
-version = "0.3.0rc3"
+version = "0.3.0rc4"
 description = "The Bazaar Compute Node Core"
 readme = "README.md"
 license = "Apache-2.0"
