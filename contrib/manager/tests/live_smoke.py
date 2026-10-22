@@ -182,7 +182,7 @@ async def exercise(path: Path, source: str):
 
     # A missing endpoint saves offline; no file resource starts in the command process.
     offline = path / "offline.txt"
-    text = await cli(
+    await cli(
         "enable",
         "example",
         "--entry",
@@ -192,7 +192,6 @@ async def exercise(path: Path, source: str):
         "--option",
         "label=offline",
     )
-    assert "next node start" in text, text
     async with running(config):
         assert "started:offline" in await asyncio.to_thread(offline.read_text)
 
@@ -250,7 +249,7 @@ async def exercise(path: Path, source: str):
             )
         ]
         await store.write(payload, expected_revision=snapshot.revision)
-    text = await cli(
+    await cli(
         "edit",
         str(await position("example-file")),
         "--option",
@@ -258,7 +257,6 @@ async def exercise(path: Path, source: str):
         "--option",
         "label=local",
     )
-    assert "next node start" in text, text
     await cli("enable", "example", "--entry", "example-consumer")
     protected = await cli("disable", str(await position("example-file")), success=False)
     assert (

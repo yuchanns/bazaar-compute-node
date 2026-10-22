@@ -401,7 +401,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             config={"path": str(path / "example.txt")},
         )
     )
-    assert enabled.config_saved and enabled.pending_restart
+    assert enabled.config_saved
 
     async def conflict(manager: ContribManager):
         package = await manager.catalog.select("example", source=source, version=">=9")

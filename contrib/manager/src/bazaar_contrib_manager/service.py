@@ -115,6 +115,7 @@ class ContribManager:
         await self._record(operation.id)
         await asyncio.to_thread(self.packages.path.mkdir, parents=True, exist_ok=True)
         token = CURRENT_CONTEXT.set(self.ctx)
+        online = self.configuration.start is None
         try:
             async with (
                 AsyncFileLock(str(self.packages.path / "environment.lock"), mode=0o600),
@@ -199,10 +200,16 @@ class ContribManager:
                                         "the sidecar configuration differs from the selected source"
                                     )
                                 self.remote = configuration
+                                online = True
                     await action(operation.id)
                 finally:
                     self.remote = None
-            await self._record(operation.id, phase="complete")
+            await self._record(
+                operation.id,
+                phase="complete",
+                pending_restart=online
+                and self.operations[operation.id].pending_restart,
+            )
         except asyncio.CancelledError:
             await self._record(
                 operation.id, phase="cancelled", error="operation was cancelled"
@@ -213,11 +220,8 @@ class ContribManager:
                 operation.id,
                 phase="failed",
                 error=str(error) or type(error).__name__,
-                pending_restart=self.operations[operation.id].pending_restart
-                or (
-                    self.operations[operation.id].config_saved
-                    and not self.operations[operation.id].applied
-                ),
+                pending_restart=online
+                and self.operations[operation.id].pending_restart,
             )
         finally:
             CURRENT_CONTEXT.reset(token)
