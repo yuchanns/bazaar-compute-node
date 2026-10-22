@@ -480,10 +480,11 @@ class ContribManager:
         *,
         removed: str | None = None,
         pin: str | None = None,
+        upgrade: bool = False,
     ) -> None:
         path = self.packages.path / "operations" / str(id)
         await self._record(id, phase="resolving")
-        lock = await self.packages.resolve(plan, path)
+        lock = await self.packages.resolve(plan, path, upgrade=upgrade)
         await self._record(id, phase="preflight")
         python = await self.packages.stage(lock)
         installed = await self.packages.inspect(python)
@@ -525,7 +526,9 @@ class ContribManager:
             document = document.model_copy(update={"contribs": tuple(entries)})
             plan = plan.model_copy(update={"packages": (*plan.packages, *packages)})
             await self._record(id, phase="resolving")
-            lock = await self.packages.resolve(plan, path / "migration")
+            lock = await self.packages.resolve(
+                plan, path / "migration", upgrade=upgrade
+            )
             python = await self.packages.stage(lock)
             preview = await self.configuration.preview(
                 python, payload=document.model_dump(mode="json")
@@ -629,7 +632,9 @@ class ContribManager:
                 await self._apply(id, snapshot)
         await self._record(id, recovery=None)
 
-    async def sync(self, *, only_missing: bool = False) -> Operation:
+    async def sync(
+        self, *, only_missing: bool = False, upgrade: bool = False
+    ) -> Operation:
         """Install the configured environment; startup can skip an already satisfied graph."""
 
         async def action(id: UUID) -> None:
@@ -639,7 +644,7 @@ class ContribManager:
             if only_missing and await self.packages.satisfied(plan):
                 return
             await self.packages.initialize()
-            await self._install(id, plan, plan, document)
+            await self._install(id, plan, plan, document, upgrade=upgrade)
 
         return await self._submit("sync", action, remote=not only_missing)
 

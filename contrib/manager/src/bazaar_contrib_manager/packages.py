@@ -154,7 +154,9 @@ class Packages:
                     pending.append(dependency)
         return True
 
-    async def resolve(self, plan: EnvironmentPlan, path: Path) -> Path:
+    async def resolve(
+        self, plan: EnvironmentPlan, path: Path, *, upgrade: bool = False
+    ) -> Path:
         await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
         packages = (
             ContribPackage(
@@ -196,6 +198,10 @@ class Packages:
             (path / "pyproject.toml").write_text, tomli_w.dumps(project), "utf-8"
         )
         lock = path / "pylock.toml"
+        try:
+            await asyncio.to_thread(shutil.copyfile, self.path / "pylock.toml", lock)
+        except FileNotFoundError:
+            pass
         await self.command(
             str(self.uv),
             "pip",
@@ -207,7 +213,7 @@ class Packages:
             "pylock.toml",
             "--output-file",
             str(lock),
-            "--upgrade",
+            *(("--upgrade",) if upgrade else ()),
             cwd=path,
         )
         return lock
@@ -278,8 +284,6 @@ class Packages:
                 str(path),
                 "--python",
                 str(info.base_python),
-                "--refresh-package",
-                plan.host.package,
                 cwd=lock.parent,
             )
         else:

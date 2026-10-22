@@ -10,6 +10,7 @@ lazy import subprocess
 lazy import threading
 lazy import tomllib
 lazy from functools import partial
+lazy from hashlib import sha256
 lazy from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 lazy from pathlib import Path
 
@@ -20,8 +21,10 @@ lazy from packaging.version import Version
 
 class PackageRegistry(SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
-        # Every release is built before this server starts and keeps its own URL.
-        self.send_header("Cache-Control", "public, max-age=3600, immutable")
+        if self.path.endswith(".whl"):
+            self.send_header("Cache-Control", "public, max-age=365000000, immutable")
+        elif "/simple/" in self.path:
+            self.send_header("Cache-Control", "public, max-age=600")
         super().end_headers()
 
 
@@ -147,7 +150,10 @@ def wheels(tmp_path_factory):
             directory = registry / "simple" / name
             directory.mkdir(parents=True)
             (directory / "index.html").write_text(
-                "\n".join(f'<a href="../../files/{file}">{file}</a>' for file in files)
+                "\n".join(
+                    f'<a href="../../files/{file}#sha256={sha256((registry / "files" / file).read_bytes()).hexdigest()}">{file}</a>'
+                    for file in files
+                )
             )
     return path
 
@@ -158,13 +164,15 @@ async def test_real_installed_manager(
     wheels: Path, tmp_path: Path, deployment: str, workflow: str
 ):
     def setup():
-        handler = partial(PackageRegistry, directory=str(wheels / "registry"))
+        registry = tmp_path / "registry"
+        shutil.copytree(wheels / "registry", registry)
+        handler = partial(PackageRegistry, directory=str(registry))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         source = f"http://127.0.0.1:{server.server_port}/one/simple/"
         other = f"http://127.0.0.1:{server.server_port}/two/simple/"
-        (wheels / "registry" / "one" / "catalog.json").write_text(
+        (registry / "one" / "catalog.json").write_text(
             json.dumps(
                 {
                     "contribs": [

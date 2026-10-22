@@ -12,6 +12,7 @@ import tomllib
 from contextlib import asynccontextmanager
 from importlib.resources import files
 from pathlib import Path
+lazy from hashlib import sha256
 lazy from typing import Any
 lazy from uuid import uuid4
 
@@ -31,6 +32,7 @@ from bazaar_core import (
 )
 from blockbuster import blockbuster_ctx
 from packaging.requirements import Requirement
+from packaging.version import Version
 
 from bazaar_contrib_manager import CONTRIB_MANAGER, ContribManager, Operation, Package
 
@@ -207,6 +209,43 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         package.distribution == detail.package
         and Requirement(package.package).specifier.contains(detail.version)
         for package in document.contribs
+    )
+
+    # A private index publishes a newer release after the original lock is warm.
+    version = Version(detail.version)
+    wheel = next((releases / "registry" / "two" / "files").glob("*.whl"))
+    await asyncio.to_thread(
+        shutil.copyfile, wheel, path / "registry" / "one" / "files" / wheel.name
+    )
+    index = path / "registry" / "one" / "simple" / detail.package / "index.html"
+    digest = sha256(await asyncio.to_thread(wheel.read_bytes)).hexdigest()
+    await asyncio.to_thread(
+        index.write_text,
+        await asyncio.to_thread(index.read_text)
+        + f'\n<a href="../../files/{wheel.name}#sha256={digest}">{wheel.name}</a>',
+    )
+    async with FileConfigStore(config) as store:
+        snapshot = await store.read()
+        assert snapshot is not None
+        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
+            mode="json"
+        )
+        for package in payload["contribs"]:
+            if ContribPackage.model_validate(package).distribution == detail.package:
+                package["package"] = f"{detail.package}>={version}"
+        await store.write(payload, expected_revision=snapshot.revision)
+    await cli("sync")
+    current = await checked(lambda manager: manager.detail("example"))
+    print(
+        f"Normal sync selected {current.version}; previous version {version}",
+        flush=True,
+    )
+    await cli("sync", "--upgrade")
+    detail = await checked(lambda manager: manager.detail("example"))
+    assert Version(detail.version) > version
+    print(f"Explicit upgrade selected {detail.version}", flush=True)
+    document = ConfigDocument.model_validate(
+        tomllib.loads(await asyncio.to_thread(config.read_text))
     )
     # An operator can run healthy resources and repair an unavailable optional package.
     recovery = path / "recovery.toml"
