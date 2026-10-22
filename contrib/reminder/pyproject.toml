@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-contrib-reminder"
-version = "0.3.0rc2"
+version = "0.3.0rc3"
 description = "Persistent reminders, recurrence and agent wake scheduling"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
