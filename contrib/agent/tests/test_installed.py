@@ -53,11 +53,8 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
             str(output),
             cwd=tmp_path,
             env=environment,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
         )
-        stdout, _ = await process.communicate()
-        assert process.returncode == 0, stdout.decode()
+        assert await process.wait() == 0
 
     for suffix in ("*.whl", "*.tar.gz"):
         command = [
@@ -78,8 +75,5 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
                 str(Path(__file__).with_name(script)),
                 cwd=tmp_path,
                 env=environment,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
             )
-            stdout, _ = await process.communicate()
-            assert process.returncode == 0, stdout.decode()
+            assert await process.wait() == 0

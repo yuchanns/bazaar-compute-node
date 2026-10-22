@@ -3,7 +3,6 @@
 lazy import asyncio
 lazy import os
 lazy import subprocess
-lazy import sys
 lazy from pathlib import Path
 
 
@@ -55,7 +54,6 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
                 ],
                 cwd=root,
                 check=True,
-                capture_output=True,
             )
         subprocess.run(
             [
@@ -68,16 +66,19 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
                 str(artifacts),
             ],
             check=True,
-            capture_output=True,
         )
         environment = tmp_path / "environment"
         subprocess.run(
             ["uv", "venv", "--python", "3.15", str(environment)],
             check=True,
-            capture_output=True,
         )
-        executable = environment / (
-            "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+        executable = Path(
+            subprocess.run(
+                ["uv", "python", "find", "--no-project", str(environment)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
         )
         subprocess.run(
             [
@@ -90,7 +91,6 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
                 *map(str, artifacts.glob("*.whl")),
             ],
             check=True,
-            capture_output=True,
         )
         return executable
 
@@ -108,14 +108,11 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
         *command,
         cwd=tmp_path,
         env=environment,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
     )
     try:
-        output, errors = await process.communicate()
+        await process.wait()
     finally:
         if process.returncode is None:
             process.kill()
             await process.wait()
-    assert process.returncode == 0, (output + errors).decode()
-    assert "workflow passed" in output.decode()
+    assert process.returncode == 0

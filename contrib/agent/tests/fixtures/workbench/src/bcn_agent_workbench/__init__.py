@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, asynccontextmanager
 from functools import partial
@@ -574,6 +575,14 @@ class DocumentStream:
         await self.reader
 
 
+lock = threading.Lock()
+
+
+def read_context_cache(path: Path) -> dict[str, Any]:
+    with lock:
+        return json.loads(path.read_text())
+
+
 class DocumentHarness:
     """Execute real document statistics and approved writes in child processes."""
 
@@ -747,9 +756,12 @@ class DocumentHarness:
             return ""
 
     def save_context(self):
-        temporary = self.input.workspace / ("document-context-" + str(uuid7()) + ".tmp")
-        temporary.write_text(json.dumps({"style": self.context}))
-        temporary.replace(self.input.workspace / "document-context.json")
+        with lock:
+            temporary = self.input.workspace / (
+                "document-context-" + str(uuid7()) + ".tmp"
+            )
+            temporary.write_text(json.dumps({"style": self.context}))
+            temporary.replace(self.input.workspace / "document-context.json")
 
     async def watch_context(self):
         while True:

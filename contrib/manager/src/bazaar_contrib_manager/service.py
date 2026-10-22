@@ -115,6 +115,7 @@ class ContribManager:
         await self._record(operation.id)
         await asyncio.to_thread(self.packages.path.mkdir, parents=True, exist_ok=True)
         token = CURRENT_CONTEXT.set(self.ctx)
+        online = self.configuration.start is None
         try:
             async with (
                 AsyncFileLock(str(self.packages.path / "environment.lock"), mode=0o600),
@@ -199,10 +200,16 @@ class ContribManager:
                                         "the sidecar configuration differs from the selected source"
                                     )
                                 self.remote = configuration
+                                online = True
                     await action(operation.id)
                 finally:
                     self.remote = None
-            await self._record(operation.id, phase="complete")
+            await self._record(
+                operation.id,
+                phase="complete",
+                pending_restart=online
+                and self.operations[operation.id].pending_restart,
+            )
         except asyncio.CancelledError:
             await self._record(
                 operation.id, phase="cancelled", error="operation was cancelled"
@@ -213,11 +220,8 @@ class ContribManager:
                 operation.id,
                 phase="failed",
                 error=str(error) or type(error).__name__,
-                pending_restart=self.operations[operation.id].pending_restart
-                or (
-                    self.operations[operation.id].config_saved
-                    and not self.operations[operation.id].applied
-                ),
+                pending_restart=online
+                and self.operations[operation.id].pending_restart,
             )
         finally:
             CURRENT_CONTEXT.reset(token)
@@ -480,17 +484,18 @@ class ContribManager:
         *,
         removed: str | None = None,
         pin: str | None = None,
+        upgrade: bool = False,
     ) -> None:
         path = self.packages.path / "operations" / str(id)
         await self._record(id, phase="resolving")
-        lock = await self.packages.resolve(plan, path)
+        lock = await self.packages.resolve(plan, path, upgrade=upgrade)
         await self._record(id, phase="preflight")
         python = await self.packages.stage(lock)
-        installed = await self.packages.inspect(python)
+        expected = await self.packages.inspect(python, definitions=False)
         if pin is not None:
             version = next(
                 package.version
-                for package in installed.packages
+                for package in expected.packages
                 if package.package == pin
             )
             entries = []
@@ -505,7 +510,7 @@ class ContribManager:
         preview = await self.configuration.preview(
             python, payload=document.model_dump(mode="json")
         )
-        names = {package.package for package in installed.packages}
+        names = {package.package for package in expected.packages}
         missing = [
             package
             for package in preview.candidate.required_packages
@@ -525,19 +530,20 @@ class ContribManager:
             document = document.model_copy(update={"contribs": tuple(entries)})
             plan = plan.model_copy(update={"packages": (*plan.packages, *packages)})
             await self._record(id, phase="resolving")
-            lock = await self.packages.resolve(plan, path / "migration")
+            lock = await self.packages.resolve(
+                plan, path / "migration", upgrade=upgrade
+            )
             python = await self.packages.stage(lock)
+            expected = await self.packages.inspect(python, definitions=False)
             preview = await self.configuration.preview(
                 python, payload=document.model_dump(mode="json")
             )
         if preview.error:
             raise ManagementError(preview.error)
-        if removed is not None:
-            installed = await self.packages.inspect(python)
-            if any(package.package == removed for package in installed.packages):
-                raise ManagementError(
-                    "another package still requires this distribution"
-                )
+        if removed is not None and any(
+            package.package == removed for package in expected.packages
+        ):
+            raise ManagementError("another package still requires this distribution")
         current = await self.configuration.store.read()
         if (current.revision if current is not None else None) != preview.revision:
             raise ConfigConflict(
@@ -578,7 +584,6 @@ class ContribManager:
             raise
         installed = await self.packages.inspect()
         versions = {package.package: package.version for package in installed.packages}
-        expected = await self.packages.inspect(python)
         mismatched = [
             package.package
             for package in expected.packages
@@ -629,7 +634,9 @@ class ContribManager:
                 await self._apply(id, snapshot)
         await self._record(id, recovery=None)
 
-    async def sync(self, *, only_missing: bool = False) -> Operation:
+    async def sync(
+        self, *, only_missing: bool = False, upgrade: bool = False
+    ) -> Operation:
         """Install the configured environment; startup can skip an already satisfied graph."""
 
         async def action(id: UUID) -> None:
@@ -639,7 +646,7 @@ class ContribManager:
             if only_missing and await self.packages.satisfied(plan):
                 return
             await self.packages.initialize()
-            await self._install(id, plan, plan, document)
+            await self._install(id, plan, plan, document, upgrade=upgrade)
 
         return await self._submit("sync", action, remote=not only_missing)
 
@@ -753,7 +760,11 @@ class ContribManager:
                 version=f"=={version}",
             )
             await self._install(
-                id, plan.model_copy(update={"host": host}), plan, document
+                id,
+                plan.model_copy(update={"host": host}),
+                plan,
+                document,
+                upgrade=True,
             )
             await self._record(id, pending_restart=True)
 

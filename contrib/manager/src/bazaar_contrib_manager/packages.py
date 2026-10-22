@@ -22,6 +22,7 @@ lazy from packaging.tags import sys_tags
 lazy from packaging.utils import canonicalize_name, parse_wheel_filename
 
 lazy from .contracts import EnvironmentInfo, EnvironmentPlan, ManagementError, Package
+lazy from .environment import inspect
 
 
 class Packages:
@@ -70,16 +71,23 @@ class Packages:
                 "package operations require a uv tool or dedicated venv"
             )
 
-    async def inspect(self, python: Path | None = None) -> EnvironmentInfo:
+    async def inspect(
+        self, python: Path | None = None, *, definitions: bool = True
+    ) -> EnvironmentInfo:
+        if python is None and not definitions:
+            return await asyncio.to_thread(inspect, definitions=False)
         output = await self.command(
-            str(python or self.python), "-m", "bazaar_contrib_manager.environment"
+            str(python or self.python),
+            "-m",
+            "bazaar_contrib_manager.environment",
+            *(("--metadata-only",) if not definitions else ()),
         )
         return EnvironmentInfo.model_validate_json(output)
 
     async def plan(
         self, document: ConfigDocument, environment: ConfigurationEnvironment | None
     ) -> EnvironmentPlan:
-        installed = await self.inspect()
+        installed = await self.inspect(definitions=False)
         host = next(
             package
             for package in installed.packages
@@ -124,7 +132,7 @@ class Packages:
 
     async def satisfied(self, plan: EnvironmentPlan) -> bool:
         """Check declarations and the requested extras against actual installed metadata."""
-        installed = await self.inspect()
+        installed = await self.inspect(definitions=False)
         packages = {package.package: package for package in installed.packages}
         pending = [
             Requirement(entry.package) for entry in plan.packages if entry.applies
@@ -154,7 +162,9 @@ class Packages:
                     pending.append(dependency)
         return True
 
-    async def resolve(self, plan: EnvironmentPlan, path: Path) -> Path:
+    async def resolve(
+        self, plan: EnvironmentPlan, path: Path, *, upgrade: bool = False
+    ) -> Path:
         await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
         packages = (
             ContribPackage(
@@ -196,6 +206,10 @@ class Packages:
             (path / "pyproject.toml").write_text, tomli_w.dumps(project), "utf-8"
         )
         lock = path / "pylock.toml"
+        try:
+            await asyncio.to_thread(shutil.copyfile, self.path / "pylock.toml", lock)
+        except FileNotFoundError:
+            pass
         await self.command(
             str(self.uv),
             "pip",
@@ -207,7 +221,7 @@ class Packages:
             "pylock.toml",
             "--output-file",
             str(lock),
-            "--upgrade",
+            *(("--upgrade",) if upgrade else ()),
             cwd=path,
         )
         return lock
@@ -225,7 +239,7 @@ class Packages:
 
     async def install(self, plan: EnvironmentPlan, lock: Path) -> None:
         if self.tool:
-            info = await self.inspect()
+            info = await self.inspect(definitions=False)
             document = tomllib.loads(
                 await asyncio.to_thread(lock.read_text, encoding="utf-8")
             )
@@ -278,8 +292,6 @@ class Packages:
                 str(path),
                 "--python",
                 str(info.base_python),
-                "--refresh-package",
-                plan.host.package,
                 cwd=lock.parent,
             )
         else:

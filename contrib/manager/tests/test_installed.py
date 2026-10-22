@@ -7,13 +7,25 @@ lazy import json
 lazy import os
 lazy import shutil
 lazy import subprocess
-lazy import sys
 lazy import threading
+lazy import tomllib
 lazy from functools import partial
+lazy from hashlib import sha256
 lazy from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 lazy from pathlib import Path
 
 import pytest
+lazy import tomli_w
+lazy from packaging.version import Version
+
+
+class PackageRegistry(SimpleHTTPRequestHandler):
+    def end_headers(self) -> None:
+        if self.path.endswith(".whl"):
+            self.send_header("Cache-Control", "public, max-age=365000000, immutable")
+        elif "/simple/" in self.path:
+            self.send_header("Cache-Control", "public, max-age=600")
+        super().end_headers()
 
 
 @pytest.fixture(scope="module")
@@ -68,14 +80,22 @@ def wheels(tmp_path_factory):
     (source / "contrib" / "manager" / "catalog.uv.lock").unlink()
     shutil.copy(source / "uv.lock", source / "contrib" / "manager" / "catalog.uv.lock")
     output = path / "registry" / "one" / "files"
-    for version in ("0.3.0rc1", "0.3.1"):
+    current = Version(
+        tomllib.loads((source / "app" / "pyproject.toml").read_text())["project"][
+            "version"
+        ]
+    )
+    versions = {
+        "current": str(current),
+        "target": f"{current.major}.{current.minor}.{current.micro + 1}",
+    }
+    (path / "versions.json").write_text(json.dumps(versions))
+    for version in versions.values():
         for member in members:
             project = source / member / "pyproject.toml"
-            project.write_text(
-                project.read_text().replace(
-                    'version = "0.3.0rc1"', f'version = "{version}"'
-                )
-            )
+            document = tomllib.loads(project.read_text())
+            document["project"]["version"] = version
+            project.write_text(tomli_w.dumps(document))
             subprocess.run(
                 [
                     "uv",
@@ -88,7 +108,6 @@ def wheels(tmp_path_factory):
                     str(output),
                 ],
                 check=True,
-                capture_output=True,
             )
     for number, version in (("one", "0.1.0"), ("two", "0.2.0")):
         fixture = path / f"example-{number}"
@@ -106,7 +125,6 @@ def wheels(tmp_path_factory):
                 str(path / "registry" / number / "files"),
             ],
             check=True,
-            capture_output=True,
         )
     fixture = path / "carrier"
     shutil.copytree(Path(__file__).parent / "fixtures" / "carrier", fixture)
@@ -121,7 +139,6 @@ def wheels(tmp_path_factory):
             str(output),
         ],
         check=True,
-        capture_output=True,
     )
     for number in ("one", "two"):
         registry = path / "registry" / number
@@ -133,7 +150,12 @@ def wheels(tmp_path_factory):
             directory = registry / "simple" / name
             directory.mkdir(parents=True)
             (directory / "index.html").write_text(
-                "\n".join(f'<a href="../../files/{file}">{file}</a>' for file in files)
+                "\n".join(
+                    f'<a href="../../files/{file}#sha256={sha256((registry / "files" / file).read_bytes()).hexdigest()}">{file}</a>'
+                    for file in files
+                    if name != "bazaar-compute-node"
+                    or f"-{versions['current']}-" in file
+                )
             )
     return path
 
@@ -144,13 +166,15 @@ async def test_real_installed_manager(
     wheels: Path, tmp_path: Path, deployment: str, workflow: str
 ):
     def setup():
-        handler = partial(SimpleHTTPRequestHandler, directory=str(wheels / "registry"))
+        registry = tmp_path / "registry"
+        shutil.copytree(wheels / "registry", registry)
+        handler = partial(PackageRegistry, directory=str(registry))
         server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         source = f"http://127.0.0.1:{server.server_port}/one/simple/"
         other = f"http://127.0.0.1:{server.server_port}/two/simple/"
-        (wheels / "registry" / "one" / "catalog.json").write_text(
+        (registry / "one" / "catalog.json").write_text(
             json.dumps(
                 {
                     "contribs": [
@@ -168,6 +192,7 @@ async def test_real_installed_manager(
             "UV_TOOL_BIN_DIR": str(tmp_path / "bin"),
             "UV_CACHE_DIR": str(tmp_path / "cache"),
         }
+        versions = json.loads((wheels / "versions.json").read_text())
         if deployment == "tool":
             command = [
                 "uv",
@@ -177,9 +202,11 @@ async def test_real_installed_manager(
                 "3.15",
                 "--index",
                 source,
+                "--prerelease",
+                "allow",
                 "--with",
                 "blockbuster>=1.5.29,<1.6",
-                "bazaar-compute-node==0.3.0rc1",
+                f"bazaar-compute-node<{versions['target']}",
             ]
             prefix = tmp_path / "tools" / "bazaar-compute-node"
         else:
@@ -187,36 +214,34 @@ async def test_real_installed_manager(
             subprocess.run(
                 ["uv", "venv", "--python", "3.15", str(prefix)],
                 check=True,
-                capture_output=True,
             )
             command = [
                 "uv",
                 "pip",
                 "install",
                 "--python",
-                str(
-                    prefix
-                    / (
-                        "Scripts/python.exe"
-                        if sys.platform == "win32"
-                        else "bin/python"
-                    )
-                ),
+                str(prefix),
                 "--index",
                 source,
+                "--prerelease",
+                "allow",
                 "blockbuster>=1.5.29,<1.6",
-                "bazaar-compute-node==0.3.0rc1",
+                f"bazaar-compute-node<{versions['target']}",
             ]
         try:
-            subprocess.run(command, env=environment, check=True, capture_output=True)
+            subprocess.run(command, env=environment, check=True)
         except BaseException:
             server.shutdown()
             server.server_close()
             thread.join()
             raise
-        python = prefix / (
-            "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
-        )
+        python = subprocess.run(
+            ["uv", "python", "find", "--no-project", str(prefix)],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         return python, environment, source, other, server, thread
 
     python, environment, source, other, server, thread = await asyncio.to_thread(setup)
@@ -229,13 +254,9 @@ async def test_real_installed_manager(
         str(wheels),
         env=environment,
         cwd=tmp_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
     )
     try:
-        output, errors = await process.communicate()
-        assert process.returncode == 0, (output + errors).decode()
-        assert "workflow passed" in output.decode()
+        assert await process.wait() == 0
     finally:
         if process.returncode is None:
             process.kill()

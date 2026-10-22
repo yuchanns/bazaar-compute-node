@@ -30,6 +30,7 @@ async def exercise(path: Path, source: str, tests: Path):
     os.environ["EDITOR_SOURCE"] = "Weekend editor"
 
     async def cli(*arguments: str):
+        print("bcn --config", config, *arguments, flush=True)
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -42,6 +43,7 @@ async def exercise(path: Path, source: str, tests: Path):
         )
         try:
             output, errors = await process.communicate()
+            print((output + errors).decode(), end="", flush=True)
             assert process.returncode == 0, (output + errors).decode()
             if "--help" not in arguments and (
                 arguments[:2]

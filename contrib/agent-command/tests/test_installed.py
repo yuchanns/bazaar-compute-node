@@ -37,12 +37,9 @@ async def distributions(tmp_path_factory) -> Path:
             str(output),
             cwd=path,
             env=environment,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
         )
         try:
-            stdout, _ = await process.communicate()
-            assert process.returncode == 0, stdout.decode()
+            assert await process.wait() == 0
         finally:
             if process.returncode is None:
                 process.terminate()
@@ -56,7 +53,6 @@ async def test_real_agent_commands(
 ):
     def setup():
         import subprocess
-        import sys
         import threading
         from functools import partial
         from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -120,21 +116,13 @@ async def test_real_agent_commands(
             subprocess.run(
                 ["uv", "venv", "--python", "3.15", str(prefix)],
                 check=True,
-                capture_output=True,
             )
             command = [
                 "uv",
                 "pip",
                 "install",
                 "--python",
-                str(
-                    prefix
-                    / (
-                        "Scripts/python.exe"
-                        if sys.platform == "win32"
-                        else "bin/python"
-                    )
-                ),
+                str(prefix),
                 "--index",
                 source,
                 "bazaar-compute-node",
@@ -142,15 +130,20 @@ async def test_real_agent_commands(
                 *requirements,
             ]
         try:
-            subprocess.run(command, env=environment, check=True, capture_output=True)
+            subprocess.run(command, env=environment, check=True)
         except BaseException:
             server.shutdown()
             server.server_close()
             thread.join()
             raise
         return (
-            prefix
-            / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python"),
+            subprocess.run(
+                ["uv", "python", "find", "--no-project", str(prefix)],
+                env=environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip(),
             environment,
             source,
             server,
@@ -167,12 +160,9 @@ async def test_real_agent_commands(
         str(tests),
         cwd=tmp_path,
         env=environment,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
     )
     try:
-        output, _ = await process.communicate()
-        assert process.returncode == 0, output.decode()
+        assert await process.wait() == 0
     finally:
         if process.returncode is None:
             process.terminate()

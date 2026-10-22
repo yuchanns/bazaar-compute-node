@@ -134,8 +134,14 @@ def create_commands(manager: ContribManager) -> click.Group:
         pass
 
     @contrib.command("sync", help="Update the contrib environment")
-    def sync():
-        return execute(manager, lambda manager: manager.sync(), outcome, err=True)
+    @click.option("--upgrade", is_flag=True, help="Upgrade package versions")
+    def sync(upgrade: bool):
+        return execute(
+            manager,
+            lambda manager: manager.sync(upgrade=upgrade),
+            outcome,
+            err=True,
+        )
 
     @contrib.command("list", help="List installed packages")
     def list_command():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -173,13 +174,18 @@ def main() -> None:
                     "run",
                     "--no-sync",
                     "python",
+                    "-u",
                     str(Path(__file__).with_name("ci_pytest.py")),
+                    "-vv",
+                    "-s",
+                    "--durations=10",
                     "-c",
                     str(member.path / "pyproject.toml"),
                     "-m",
                     marker,
                 ],
                 cwd=member.path,
+                env=os.environ | {"PYTHONUNBUFFERED": "1"},
                 check=False,
             )
             # pytest returns 5 when a package has no tests for the selected marker.
