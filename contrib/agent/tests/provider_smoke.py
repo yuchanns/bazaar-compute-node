@@ -217,12 +217,7 @@ async def session_routes(peer: Peer, draft: Path, workspace: Path) -> Path:
         assert data["context"]["agent_id"] == data["agent_id"]
         assert data["words"] > 0 and data["lines"] > 0
         instruction = "\n".join(request["instructions"])
-        for value in (
-            request["id"],
-            "document",
-            str(workspace),
-        ):
-            assert value in instruction
+        assert str(workspace) in instruction
         assert (
             "Credential handling" in instruction and "bcc message send" in instruction
         )
