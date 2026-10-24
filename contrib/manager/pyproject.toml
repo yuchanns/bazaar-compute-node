@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-contrib-manager"
-version = "0.3.0rc4"
+version = "0.3.0rc5"
 description = "The Bazaar Compute Node Manager Contrib"
 readme = "README.md"
 license = "Apache-2.0"
