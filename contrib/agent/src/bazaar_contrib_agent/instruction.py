@@ -28,8 +28,6 @@ class DeveloperInstructionContext(BaseModel):
     agent_name: Line
     bot_names: tuple[Line, ...]
     agent_id: Line
-    runtime_session_id: Line
-    runtime: Line
     workspace: Line
     mode: Mode = Mode.SESSION
 

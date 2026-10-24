@@ -8,8 +8,6 @@ Your workspace persists across turns, so you can recover context when resumed. Y
 
 This is authoritative context injected by bcn. Do not infer computer identity from hostname or cwd when this section is present.
 
-- Session: {{runtime_session_id}}
-- Runtime: {{runtime}}
 - Workspace: {{workspace}}
 
 ## How these instructions apply

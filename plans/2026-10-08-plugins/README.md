@@ -1,4 +1,4 @@
-# BCN 0.3 模块工程
+﻿# BCN 0.3 模块工程
 
 ## 版本目标
 
@@ -377,3 +377,14 @@ BCN CI 逐包构建独立 wheel／sdist，以必要包产物及固定的独立�
 全部包发布和实际包源安装验收完成后，发布同一提交上的 annotated v<版本> 标签和整体 release。
 版本准备、构建、验收与发布均由仓库工具及 CI 执行，人工输入只需要共同目标版本。
 0.3 最终发行的冻结、升级验证与发布顺序见 [路线图的发行清单](roadmap.md#03-发行清单与发布顺序)。
+
+## 默认初始化提示中的运行信息（2026-10-25）
+
+### Task：移除会话号、运行时及对应的提示变量
+
+默认 agent 通过 `SessionInput.id` 和 `BCN_RUNTIME_SESSION_ID` 绑定实际运行会话。
+本任务删除默认初始化模板中的 `Session`、`Runtime` 展示行，
+清理 `DeveloperInstructionContext` 的 `runtime_session_id`、`runtime` 字段及启动会话时的对应传参。
+独立安装验收继续验证工作目录和会话关联，移除对这两项提示展示的旧要求。
+验证包括真实模板渲染、agent 包的 Ruff 检查和格式检查、仓库根目录的 Pyright/LSP 检查，
+以及 wheel、sdist 的独立安装验收和发行包内模板核对。

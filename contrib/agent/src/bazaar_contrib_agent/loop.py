@@ -547,8 +547,6 @@ class AgentLoop:
                 agent_name=self.agent.name,
                 bot_names=tuple(names),
                 agent_id=self.agent.id,
-                runtime_session_id=session_id,
-                runtime=runtime.name,
                 workspace=str(self.agent.workspace),
                 mode=mode,
             ).render
