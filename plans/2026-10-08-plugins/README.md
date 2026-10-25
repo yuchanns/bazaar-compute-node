@@ -486,3 +486,78 @@ audit 说明启用及订阅 contrib 的使用。使用说明中的可选模块�
 保留新的审批能力、审批异常拒绝及关闭活动流时中断的决定。
 通过独立仓库的 TestChannel、隔离 BCN 及真实 Codex 路径验证业务结果，
 在原验收计划登记所用契约版本、提交与实际证据。
+
+### Task：timer 公共超时封装（2026-10-25）
+
+开发线程 `6e006c15-32b1-5bde-9401-7a63216c1019` 确认包职责，
+`7d4ec73a-6fb2-5dac-a8b9-6318279c4a86` 授权实现。
+`bazaar-contrib-timer` 导出 `timeout(timer, delay_ms)` 异步上下文管理器，
+基于已有公共 Timer 的 create／wait／cancel 驱动超时；毫秒参数沿用提供者的校验与调度粒度，
+`None` 表示禁用超时。具体时间轮继续实现原基础契约。
+
+进入上下文时记录当前任务的取消计数，创建 handle 和所属等待任务；到期取消当前任务，
+退出时只撤销本作用域发起的一次取消，并在没有额外取消请求时转换为 `TimeoutError`。
+外部取消和外层超时继续传播；提供者等待失败唤醒所属作用域并保留原异常。
+正常完成、业务异常和取消都回收 handle，并等待所属任务结束。
+参考已核对的 [CPython 3.15 timeout 实现](https://github.com/python/cpython/blob/3.15/Lib/asyncio/timeouts.py)
+及 [Task 取消计数语义](https://docs.python.org/3.15/library/asyncio-task.html#asyncio.Task.uncancel)。
+插件依赖图已有逆序退出及清理等待保证，消费者通过 accepts 声明 TIMER。
+
+使用既有真实 ContribHub／timer-wheel 测试装配，验证文件操作正常完成、超时后的业务回退与继续工作、
+外部取消清理、内外层分别到期及超时清理期间外部取消。补充公共使用说明，
+执行 Ruff、格式、timer-wheel 包测试、仓库根目录 Pyright/LSP 和相关发行包构建后交人工 review。
+
+本地结果：真实插件装配的 timer-wheel 测试 **11 passed（3.36 秒）**，
+包含原有基础能力、提供者关闭时超时作用域收到原异常，以及五项文件／取消／嵌套业务检查。
+app／core／contrib／scripts 的 Ruff、三个 Python 文件的格式检查通过；
+timer 包 Pyright CLI 为零错误、零警告，仓库根目录语言服务器检查通过。
+timer 与 timer-wheel 的 wheel／sdist 构建通过，timer 的 wheel 制品包含公开导出的封装实现。
+
+远端 [CI 40202866614](https://github.com/yuchanns/bazaar-compute-node/actions/runs/40202866614)
+在实现提交 `fd5880e8efff498fb2cad8fa153f48e8bf0fe41a` 上全部 9 个任务通过。
+timer-wheel 的同组真实插件测试 **11 passed（3.35 秒）**；Agent 在 Linux／Windows 的安装态业务验收，
+以及 agent-command、消息、协作、提醒的 Linux 安装态回归均通过，静态检查通过。
+本次仅将终态结果补入原计划，提交实现与测试内容保持与该 CI 一致，交人工 review。
+
+同一迁移任务按 `4ac73882-0828-5c7c-bfc9-56c26f50367e` 补充公开的
+`wait_for(timer, awaitable, delay_ms)`，泛型结果直接返回被等待对象的结果。
+它复用同包 timeout 的到期取消、外部取消和清理逻辑，保持毫秒与 None 语义。
+原来等待单个 awaitable 的九处迁移调用改用 wait_for；reminder 启动恢复的多步操作继续使用 timeout。
+现有真实文件、回退与外部取消测试同时覆盖直接作用域和单次等待，相关安装态业务继续通过原装配验证。
+参考 Python 3.15 的 asyncio.wait_for 与 timeout 文档，公共 Timer 与时间轮基础契约保持原样。
+
+按 `86c7ba8b-6b73-5813-a66a-cd5cb6aae578` 收敛到实际需要的 timeout 和 wait_for。
+wait_for 补充后的 Ruff、264 个文件的格式检查及仓库根目录要求的 Pyright/LSP 通过；
+八个包共十六个 wheel／sdist 构建并逐项核对源码字节与依赖元数据通过。
+迁移初版 `29220b4718030b5b9a1dcd9b594b4a2acc0bcf78` 的
+[CI 40208448618](https://github.com/yuchanns/bazaar-compute-node/actions/runs/40208448618)
+全部二十七项任务通过，包括 Linux／macOS Unix 连接和 Windows 命名管道安装场景；
+新增 wait_for 与消费者调用完成本地复验后，在更新后的提交上重新执行 CI。
+
+wait_for 复验：timer。公开 wait_for 的实际文件结果返回、禁用预算、到期回退与外部取消，在现有真实时间轮场景中复验，11 项通过（3.31 秒）。
+
+零时限语义按 `395cbddd-8a77-58fd-a838-2121585bb48c`、
+`ad9831c4-a330-5068-8745-be2984995cfe` 收敛到 asyncio 的实际行为。
+已核对 CPython 3.15 的 tasks.py 414–457 与 timeouts.py 46–120：
+wait_for 的非正预算直接处理已完成结果或取消等待对象；timeout 的非正预算通过 call_soon 取消当前任务。
+这两条路径复用 asyncio 的公开实现，不创建 TIMER handle；None 继续禁用时限。
+正预算使用 TIMER handle.wait 取得到期通知，再对公开 asyncio.Timeout 调用 reschedule(loop.time())，
+由标准库完成取消计数、嵌套、外部取消和异常链转换；其初始截止时间为 None，实际正时限只由 TIMER 计时。
+退出时先关闭原生 Timeout 作用域，再取消并等待所属 Timer 等待任务，避免清理等待使已经完成的业务再超时。
+保留提供者关闭异常的传播；消息和提醒排空可直接调用已经支持零预算的公共 wait_for。
+现有真实文件回退与嵌套场景覆盖非正和正预算，复验外部取消、提供者退出及安装态业务。
+参考 https://github.com/python/cpython/blob/3.15/Lib/asyncio/tasks.py#L414-L457
+及 https://github.com/python/cpython/blob/3.15/Lib/asyncio/timeouts.py#L46-L120 。
+
+零时限修订的验证：Ruff、264 个文件的格式检查和仓库根目录要求的 Pyright/LSP 通过。
+真实时间轮的既有文件回退、非正预算、内外层超时、外部取消及提供者关闭共 14 项通过；
+提供者异常从已完成等待任务的结果读取，最终该分支已随同组场景复验通过。
+使用真实 ContribHub／时间轮及实际文件对照 asyncio：零预算未开始的投递被取消，
+已完成投递结果可直接返回，timeout(0) 的代码块执行至让出点后超时，三项观察结果一致。
+SQLite 8 项、Unix sidecar 4 项、消息 1 项、提醒 1 项及 Agent 完整安装态 1 项通过，
+八个包的十六个 wheel／sdist 构建、源码字节与依赖元数据核对通过，共享锁内容保持不变。
+修订前 `4c808b4b69a8e8d5c1acce5121305306f85a0c7b` 的
+[CI 40210350758](https://github.com/yuchanns/bazaar-compute-node/actions/runs/40210350758)
+全部二十七项任务成功；本轮零时限与原生取消处理修订将随更新后的八个签名提交重新执行 CI。
+
+零预算修订：timer。非正预算直接使用 asyncio 原生快路径，正预算由 TIMER 驱动公开 Timeout 的取消与异常转换；14 项真实场景及三种零预算文件行为对照通过。
