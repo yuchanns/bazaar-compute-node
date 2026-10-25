@@ -515,12 +515,14 @@ version = "0.3.0rc6"
 source = { editable = "contrib/sidecar-windows" }
 dependencies = [
     { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
 ]
 
