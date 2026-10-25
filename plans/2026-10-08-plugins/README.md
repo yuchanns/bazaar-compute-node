@@ -566,6 +566,9 @@ native edges 单项通过（7.43 秒），agent-command 两项通过（125.60 �
 迁移提交：messages-node。命令调度器使用所属消息服务的 Timer 约束排空等待；零秒预算立即取消现有任务。
 现有安装态消息业务 1 项通过（41.53 秒），Agent 的运行与进程恢复场景通过。
 
+迁移提交：reminder。启动恢复、停止等待、失败重试和命令排空四处使用所属 Timer，保留零秒排空和取消传播。
+现有提醒安装态业务 1 项通过（39.92 秒），真实 timer-wheel 场景 11 项通过（3.29 秒）。
+
 同一迁移任务按 `4ac73882-0828-5c7c-bfc9-56c26f50367e` 补充公开的
 `wait_for(timer, awaitable, delay_ms)`，泛型结果直接返回被等待对象的结果。
 它复用同包 timeout 的到期取消、外部取消和清理逻辑，保持毫秒与 None 语义。
@@ -592,6 +595,8 @@ wait_for 复验：sidecar-unix。Unix 的显式 TIMER 依赖与连接生命周�
 wait_for 复验：sidecar-windows。Windows 显式 TIMER 绑定保持原迁移实现；构建与类型检查通过，更新后原生验收由新 CI 执行。
 
 wait_for 复验：messages-node。排空的单次等待改用 wait_for，保留 shield 与零预算分支；安装态业务复验 1 项通过（44.20 秒）。
+
+wait_for 复验：reminder。停止、重试与排空使用 wait_for，启动多步恢复继续使用 timeout；安装态业务复验 1 项通过（41.72 秒）。
 
 零时限语义按 `395cbddd-8a77-58fd-a838-2121585bb48c`、
 `ad9831c4-a330-5068-8745-be2984995cfe` 收敛到 asyncio 的实际行为。
@@ -628,3 +633,5 @@ SQLite 8 项、Unix sidecar 4 项、消息 1 项、提醒 1 项及 Agent 完整�
 零预算修订：sidecar-windows。Windows 显式 TIMER 装配保持，修订后原生命名管道场景由新 CI 验证。
 
 零预算修订：messages-node。排空直接调用公共 wait_for，移除调用方重复的零预算分支；消息安装态业务 1 项通过（42.50 秒）。
+
+零预算修订：reminder。排空直接使用公共 wait_for 的非正预算语义，保持启动多步 timeout；提醒安装态业务 1 项通过（39.39 秒）。

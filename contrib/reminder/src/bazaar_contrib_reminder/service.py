@@ -35,6 +35,7 @@ class Reminders:
     ):
         self.storage = ReminderStore(database, messages)
         self._audit = ReminderAudit(audit)
+        self._timer = timer
         self._concurrency = ThreadLockRegistry()
         self._bindings: dict[Agent, tuple[CommandDispatcher, Wake]] = {}
         self._shutdown_timeout: float | None = None
@@ -79,7 +80,10 @@ class Reminders:
             reminder_concurrency=self._concurrency,
         )
         dispatcher = CommandDispatcher(
-            service, actors=actors, session_binding_validator=session_binding_validator
+            service,
+            actors=actors,
+            timer=self._timer,
+            session_binding_validator=session_binding_validator,
         )
         dispatcher.start_accepting()
         self._bindings[owner] = dispatcher, wake

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 from enum import Enum, auto
+from math import ceil
 from time import time_ns
 from typing import Annotated, Literal, cast
 
@@ -11,6 +12,7 @@ from bazaar_contrib_messages.results import (
     MessageSearchTimeoutError,
     ThreadNotFoundError,
 )
+from bazaar_contrib_timer import Timer, wait_for
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -279,9 +281,11 @@ class CommandDispatcher:
         service: ReminderCommands,
         *,
         actors: Actors,
+        timer: Timer,
         session_binding_validator: SessionBindingValidator | None = None,
     ) -> None:
         self._actors = actors
+        self._timer = timer
         self._service = service
         self._session_binding_validator = session_binding_validator
         self._state = _State.STOPPED
@@ -315,7 +319,11 @@ class CommandDispatcher:
         if not self._in_flight:
             return
         try:
-            await asyncio.wait_for(asyncio.shield(self._drained.wait()), timeout)
+            await wait_for(
+                self._timer,
+                asyncio.shield(self._drained.wait()),
+                ceil(timeout * 1000),
+            )
             return
         except TimeoutError:
             pass
