@@ -4,9 +4,17 @@ lazy import asyncio
 lazy import time
 lazy from collections.abc import AsyncIterator
 lazy from contextlib import asynccontextmanager
+lazy from pathlib import Path
 
 import pytest
-from bazaar_contrib_timer import TIMER, Timer, TimerCancelledError, TimerClosedError
+from bazaar_contrib_timer import (
+    TIMER,
+    Timer,
+    TimerCancelledError,
+    TimerClosedError,
+    timeout,
+    wait_for,
+)
 from bazaar_core import (
     CONTRIB_CHANGED,
     Blocked,
@@ -18,6 +26,7 @@ from bazaar_core import (
     ContribHub,
     Failed,
 )
+lazy import aiofiles
 
 from bazaar_contrib_timer_wheel import timer_wheel
 
@@ -153,6 +162,10 @@ async def test_provider_shutdown_completes_pending_waiters_with_the_shared_error
         services.append(ctx.accept(TIMER))
         yield
 
+    async def guarded_work():
+        async with timeout(services[0], 60_000):
+            await asyncio.Event().wait()
+
     async with (
         ContribHub() as hub,
         hub.enable(
@@ -170,10 +183,13 @@ async def test_provider_shutdown_completes_pending_waiters_with_the_shared_error
     ):
         handle = services[0].create(60_000)
         waiter = asyncio.create_task(handle.wait(), eager_start=True)
+        guarded = asyncio.create_task(guarded_work(), eager_start=True)
     with pytest.raises(TimerClosedError):
         await waiter
     with pytest.raises(TimerClosedError):
         await handle.wait()
+    with pytest.raises(TimerClosedError):
+        await guarded
 
 
 async def test_unexpected_driver_cancellation_closes_handles_and_blocks_consumers():
@@ -233,3 +249,116 @@ async def test_unexpected_driver_cancellation_closes_handles_and_blocks_consumer
             item.name == "consumer" and isinstance(item.state, Blocked)
             for item in hub.snapshots
         )
+
+
+async def test_timeout_allows_completed_writes_and_later_work(
+    timer: Timer, tmp_path: Path
+):
+    path = tmp_path / "completed.txt"
+    async with aiofiles.open(path, "w") as stream:
+        async with timeout(timer, 200):
+            await stream.write("message saved\n")
+        await timer.create(300).wait()
+        await stream.write("later message saved\n")
+    async with aiofiles.open(path) as stream:
+        content = await wait_for(timer, stream.read(), 200)
+    assert "message saved" in content and "later message saved" in content
+
+
+@pytest.mark.parametrize("delay_ms", [-1, 0, 30])
+async def test_timeout_runs_fallback_and_allows_the_next_operation(
+    timer: Timer, tmp_path: Path, delay_ms: int
+):
+    path = tmp_path / "fallback.txt"
+    async with aiofiles.open(path, "w") as stream:
+        try:
+            await wait_for(timer, timer.create(5_000).wait(), delay_ms)
+        except TimeoutError:
+            await stream.write("fallback delivered\n")
+        await wait_for(timer, stream.write("next operation completed\n"), None)
+    async with aiofiles.open(path) as stream:
+        content = await stream.read()
+    assert "fallback delivered" in content and "next operation completed" in content
+
+
+async def test_timeout_preserves_external_cancellation_and_file_cleanup(
+    timer: Timer, tmp_path: Path
+):
+    path = tmp_path / "cancelled.txt"
+    entered = asyncio.Event()
+
+    async def write():
+        async with aiofiles.open(path, "w") as stream, timeout(timer, 2_000):
+            try:
+                entered.set()
+                await timer.create(5_000).wait()
+            finally:
+                await stream.write("request resources released\n")
+
+    request = asyncio.create_task(wait_for(timer, write(), 2_000))
+    await entered.wait()
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    async with aiofiles.open(path) as stream:
+        assert "request resources released" in await stream.read()
+
+
+@pytest.mark.parametrize("delay_ms", [0, 30])
+async def test_nested_timeouts_allow_inner_and_outer_business_fallbacks(
+    timer: Timer, tmp_path: Path, delay_ms: int
+):
+    path = tmp_path / "nested.txt"
+    async with aiofiles.open(path, "w") as stream:
+        async with timeout(timer, 2_000):
+            try:
+                async with timeout(timer, delay_ms):
+                    await timer.create(5_000).wait()
+            except TimeoutError:
+                await stream.write("inner fallback delivered\n")
+            await stream.write("outer operation continued\n")
+        try:
+            async with timeout(timer, delay_ms):
+                try:
+                    async with timeout(timer, 2_000):
+                        await timer.create(5_000).wait()
+                except TimeoutError:
+                    await stream.write("inner deadline handled\n")
+        except TimeoutError:
+            await stream.write("outer fallback delivered\n")
+    async with aiofiles.open(path) as stream:
+        content = await stream.read()
+    assert all(
+        message in content
+        for message in (
+            "inner fallback delivered",
+            "outer operation continued",
+            "outer fallback delivered",
+        )
+    )
+
+
+async def test_external_cancellation_during_timeout_cleanup_is_preserved(
+    timer: Timer, tmp_path: Path
+):
+    path = tmp_path / "interrupted-cleanup.txt"
+    cleaning = asyncio.Event()
+    released = asyncio.Event()
+
+    async def write():
+        async with aiofiles.open(path, "w") as stream, timeout(timer, 30):
+            try:
+                await timer.create(5_000).wait()
+            finally:
+                await stream.write("cleanup started\n")
+                cleaning.set()
+                await released.wait()
+
+    request = asyncio.create_task(write())
+    await cleaning.wait()
+    request.cancel()
+    released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    async with aiofiles.open(path) as stream:
+        assert "cleanup started" in await stream.read()

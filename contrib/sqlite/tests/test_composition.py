@@ -17,6 +17,7 @@ from bazaar_contrib_storage import (
     database,
     storage,
 )
+from bazaar_contrib_timer_wheel import timer_wheel
 from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribHub
 
 from bazaar_contrib_sqlite import sqlite
@@ -50,6 +51,7 @@ async def test_consumer_roots_select_and_close_sqlite_dependencies(tmp_path: Pat
 
     composition = Composition(
         entries=(
+            ContribEntry(name="timer-wheel", definition=timer_wheel),
             ContribEntry(name="storage", definition=storage),
             ContribEntry(
                 name="sqlite",
@@ -107,6 +109,7 @@ async def test_writer_loss_releases_consumers_and_closes_database(tmp_path: Path
         hub.enable(
             Composition(
                 entries=(
+                    ContribEntry(name="timer-wheel", definition=timer_wheel),
                     ContribEntry(name="storage", definition=storage),
                     ContribEntry(
                         name="sqlite",

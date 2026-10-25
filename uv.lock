@@ -482,11 +482,15 @@ name = "bazaar-contrib-sidecar"
 version = "0.3.0rc6"
 source = { editable = "contrib/sidecar" }
 dependencies = [
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bazaar-core", editable = "core" }]
+requires-dist = [
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
+    { name = "bazaar-core", editable = "core" },
+]
 
 [[package]]
 name = "bazaar-contrib-sidecar-unix"
@@ -494,12 +498,14 @@ version = "0.3.0rc6"
 source = { editable = "contrib/sidecar-unix" }
 dependencies = [
     { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
 ]
 
@@ -509,12 +515,14 @@ version = "0.3.0rc6"
 source = { editable = "contrib/sidecar-windows" }
 dependencies = [
     { name = "bazaar-contrib-sidecar" },
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
 ]
 
@@ -525,6 +533,7 @@ source = { editable = "contrib/sqlite" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "bazaar-contrib-storage" },
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
     { name = "jinja2" },
     { name = "pydantic" },
@@ -534,6 +543,7 @@ dependencies = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "pydantic", specifier = ">=2.12.0" },
@@ -567,7 +577,7 @@ requires-dist = [
 
 [[package]]
 name = "bazaar-contrib-timer"
-version = "0.3.0rc6"
+version = "0.3.0rc7"
 source = { editable = "contrib/timer" }
 dependencies = [
     { name = "bazaar-core" },

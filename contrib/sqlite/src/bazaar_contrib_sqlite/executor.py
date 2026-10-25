@@ -8,11 +8,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequen
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from math import ceil
 from time import monotonic
 from types import TracebackType
 from typing import TypeVar
 
 import aiosqlite
+from bazaar_contrib_timer import Timer, wait_for
 from bazaar_core import TaskFailureSignal
 
 _LOGGER = logging.getLogger(__name__)
@@ -307,6 +309,7 @@ class SqliteExecutor:
         writer_connection: aiosqlite.Connection,
         read_connections: Sequence[aiosqlite.Connection],
         *,
+        timer: Timer,
         reader_factory: Callable[[], Awaitable[aiosqlite.Connection]],
         max_idle_readers: int,
         max_readers: int | None,
@@ -316,6 +319,7 @@ class SqliteExecutor:
         if not read_connections:
             raise ValueError("at least one read connection is required")
         self._tasks = tasks
+        self._timer = timer
         self._writer_connection = writer_connection
         self._reader_factory = reader_factory
         self._max_idle_readers = max_idle_readers
@@ -615,9 +619,10 @@ class SqliteExecutor:
     async def _reap_idle_readers(self) -> None:
         while not self._reader_reaper_stop.is_set():
             try:
-                await asyncio.wait_for(
+                await wait_for(
+                    self._timer,
                     self._reader_reaper_stop.wait(),
-                    timeout=self._reader_idle_timeout,
+                    ceil(self._reader_idle_timeout * 1000),
                 )
             except TimeoutError:
                 pass

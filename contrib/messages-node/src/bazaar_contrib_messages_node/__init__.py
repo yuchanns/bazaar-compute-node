@@ -97,7 +97,10 @@ class NodeMessages:
         )
         await service._attachments.reconcile()
         dispatcher = CommandDispatcher(
-            service, actors=actors, session_binding_validator=session_binding_validator
+            service,
+            actors=actors,
+            timer=self.timer,
+            session_binding_validator=session_binding_validator,
         )
         dispatcher.start_accepting()
         self._bindings[owner] = dispatcher

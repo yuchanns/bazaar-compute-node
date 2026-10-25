@@ -38,6 +38,7 @@ async def exercise(directory: Path):
                 "version": "5",
                 "contribs": [
                     {"enabled": [{"entry": "commands"}]},
+                    {"enabled": [{"entry": "timer-wheel"}]},
                     {"enabled": [{"entry": native, "config": {"endpoint": endpoint}}]},
                     {"enabled": [{"entry": "sidecar"}]},
                     {"enabled": [{"entry": "sidecar-controls"}]},

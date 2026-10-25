@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import math
 import random
 from collections.abc import Awaitable, Callable
@@ -10,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid7
 
-from bazaar_contrib_timer import Timer
+from bazaar_contrib_timer import Timer, wait_for
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from .errors import (
@@ -101,8 +100,11 @@ class ChannelSender:
         error: ChannelError | None = None
         terminal: ChannelDeliveryReceipt | None = None
         try:
-            async with asyncio.timeout(self.policy.timeout):
-                parts = await self.channel.prepare_send(request)
+            parts = await wait_for(
+                self.timer,
+                self.channel.prepare_send(request),
+                math.ceil(self.policy.timeout * 1000),
+            )
         except Exception as cause:  # noqa: BLE001
             error = self._error(cause, phase="prepare", delivery="not_sent")
             parts = ()
@@ -126,8 +128,11 @@ class ChannelSender:
                     timeout=self.policy.timeout,
                 )
                 try:
-                    async with asyncio.timeout(self.policy.timeout):
-                        receipt = await part.send(attempt)
+                    receipt = await wait_for(
+                        self.timer,
+                        part.send(attempt),
+                        math.ceil(self.policy.timeout * 1000),
+                    )
                     if part.kind == "message" and receipt is None:
                         raise ChannelError(
                             "channel send returned no delivery receipt",

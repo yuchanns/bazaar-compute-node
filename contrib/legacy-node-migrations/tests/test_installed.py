@@ -29,6 +29,7 @@ async def test_installed_schemas_upgrade_existing_nodes_and_create_new_databases
                 "harness",
                 "invoke",
                 "timer",
+                "timer-wheel",
                 "sidecar",
                 "storage",
                 "sqlite",

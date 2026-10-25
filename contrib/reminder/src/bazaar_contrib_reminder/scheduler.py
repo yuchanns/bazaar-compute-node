@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from math import ceil
 from uuid import uuid7
 
 from bazaar_contrib_messages import Agent, Thread, ThreadConcurrency
@@ -21,6 +22,10 @@ from bazaar_contrib_timer import (
     TimerCancelledError,
     TimerClosedError,
     TimerHandle,
+    wait_for,
+)
+from bazaar_contrib_timer import (
+    timeout as timer_timeout,
 )
 
 from .audit import ReminderAudit
@@ -159,7 +164,7 @@ class ReminderScheduler:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         self._poke.clear()
-        async with asyncio.timeout(timeout):
+        async with timer_timeout(self._timer, ceil(timeout * 1000)):
             await self._publish_pending_recovery()
             await self._materialize_due_batches()
         self._failure.reset()
@@ -188,8 +193,7 @@ class ReminderScheduler:
             self._state = _Stopped()
             return
         try:
-            async with asyncio.timeout(timeout):
-                await task
+            await wait_for(self._timer, task, ceil(timeout * 1000))
         except TimeoutError:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -228,10 +232,7 @@ class ReminderScheduler:
             except Exception:
                 self._logger.exception("reminder cycle failed; retrying")
                 try:
-                    await asyncio.wait_for(
-                        self._poke.wait(),
-                        _CYCLE_RETRY_MS / 1_000,
-                    )
+                    await wait_for(self._timer, self._poke.wait(), _CYCLE_RETRY_MS)
                 except TimeoutError:
                     pass
                 self._poke.clear()

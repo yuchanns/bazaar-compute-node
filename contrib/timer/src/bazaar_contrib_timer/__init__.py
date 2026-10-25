@@ -1,10 +1,20 @@
-"""Shared timer contracts for consumers and independently installed providers."""
+"""Shared timer contracts and provider-independent timeout scopes."""
 
 from typing import Protocol
 
 from bazaar_core import ServiceKey
 
-__all__ = ["TIMER", "Timer", "TimerCancelledError", "TimerClosedError", "TimerHandle"]
+lazy from .timeouts import timeout, wait_for
+
+__all__ = [
+    "TIMER",
+    "Timer",
+    "TimerCancelledError",
+    "TimerClosedError",
+    "TimerHandle",
+    "timeout",
+    "wait_for",
+]
 
 
 class TimerCancelledError(RuntimeError):

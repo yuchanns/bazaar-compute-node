@@ -133,7 +133,11 @@ async def exercise(directory: Path, transport: str, control: str):
         yield
 
     entries = await asyncio.to_thread(
-        load, [ContribSpec(contrib=provider, config={"endpoint": endpoint})]
+        load,
+        [
+            ContribSpec(contrib="timer-wheel"),
+            ContribSpec(contrib=provider, config={"endpoint": endpoint}),
+        ],
     )
     entries = entries.model_copy(
         update={

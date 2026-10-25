@@ -231,10 +231,11 @@ async def exercise(path: Path, source: str, tests: Path):
         composition = await asyncio.to_thread(
             load,
             [
+                ContribSpec(contrib="timer-wheel"),
                 ContribSpec(
                     contrib="sidecar-windows" if os.name == "nt" else "sidecar-unix",
                     config={"endpoint": endpoint},
-                )
+                ),
             ],
         )
         composition = composition.model_copy(

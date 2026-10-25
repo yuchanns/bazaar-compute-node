@@ -17,6 +17,7 @@ from bazaar_contrib_storage import (
     Select,
     Table,
 )
+from bazaar_contrib_timer import Timer
 from bazaar_core import Contrib, ContribHub, ContribSpec, Failed, load
 
 from bazaar_contrib_schema import Dependency, Migration, ModuleSchema, Schema
@@ -97,9 +98,10 @@ async def registered(schema: Schema, module: ModuleSchema, entry: str = "schema"
 
 async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
     tmp_path: Path,
+    timer: Timer,
 ):
     config = SqliteConfig(path=tmp_path / "modules.sqlite3")
-    async with open_database(config) as database:
+    async with open_database(config, timer=timer) as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, NOTES), registered(schema, LABELS, "storage"):
@@ -137,7 +139,7 @@ async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
         ),
     )
     for _ in range(2):
-        async with open_database(config) as database:
+        async with open_database(config, timer=timer) as database:
             schema = Schema(database)
             await schema.start()
             async with (
@@ -159,9 +161,10 @@ async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
 
 async def test_failed_unique_index_migration_can_resume_after_resolving_data(
     tmp_path: Path,
+    timer: Timer,
 ):
     async with open_database(
-        SqliteConfig(path=tmp_path / "unique.sqlite3")
+        SqliteConfig(path=tmp_path / "unique.sqlite3"), timer=timer
     ) as database:
         schema = Schema(database)
         await schema.start()
@@ -214,9 +217,9 @@ async def test_failed_unique_index_migration_can_resume_after_resolving_data(
             )
 
 
-async def test_table_ownership_survives_registration_exit(tmp_path: Path):
+async def test_table_ownership_survives_registration_exit(tmp_path: Path, timer: Timer):
     async with open_database(
-        SqliteConfig(path=tmp_path / "ownership.sqlite3")
+        SqliteConfig(path=tmp_path / "ownership.sqlite3"), timer=timer
     ) as database:
         schema = Schema(database)
         await schema.start()

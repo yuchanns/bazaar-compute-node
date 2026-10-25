@@ -1,4 +1,4 @@
-"""A real TCP implementation depending only on the public sidecar package."""
+"""A real TCP implementation using public sidecar and timer contracts."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ lazy import asyncio
 
 from bazaar_contrib_sidecar import CLIENT, SERVER, Client, Sessions
 from bazaar_contrib_sidecar.streams import Connection, serve
+from bazaar_contrib_timer import TIMER
 from bazaar_core import Context, Contrib
 from pydantic import BaseModel
 
@@ -50,7 +51,7 @@ async def lifespan(ctx: Context, config: Config):
         return await asyncio.open_connection("127.0.0.1", port)
 
     connection = Connection(connect)
-    client = Client(connection.send, connection.aclose)
+    client = Client(connection.send, connection.aclose, ctx.accept(TIMER))
     try:
         ctx.offer(SERVER, Server(config.endpoint))
         ctx.offer(CLIENT, client)
@@ -59,4 +60,6 @@ async def lifespan(ctx: Context, config: Config):
         await client.aclose()
 
 
-transport = Contrib(config=Config, offers=[SERVER, CLIENT], lifespan=lifespan)
+transport = Contrib(
+    config=Config, accepts=[TIMER], offers=[SERVER, CLIENT], lifespan=lifespan
+)
