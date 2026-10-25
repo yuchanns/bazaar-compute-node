@@ -557,6 +557,9 @@ sidecar 的真实第三方 TCP 测试实现也接受 TIMER。按插件串行形�
 真实 TCP 实现与独立客户端组合提供实际 timer-wheel；Unix sidecar 三项安装态场景通过，
 native edges 单项通过（7.43 秒），agent-command 两项通过（125.60 秒），协作一项通过（16.35 秒）。
 
+迁移提交：sidecar-unix。Unix 传输通过 accepts 声明 TIMER 并传给 Client，依赖图保证连接先于 Timer 关闭。
+本地原生 Unix 安装态业务与连接边界四项场景通过。
+
 同一迁移任务按 `4ac73882-0828-5c7c-bfc9-56c26f50367e` 补充公开的
 `wait_for(timer, awaitable, delay_ms)`，泛型结果直接返回被等待对象的结果。
 它复用同包 timeout 的到期取消、外部取消和清理逻辑，保持毫秒与 None 语义。
@@ -577,6 +580,8 @@ wait_for 复验：timer。公开 wait_for 的实际文件结果返回、禁用�
 wait_for 复验：channel。两处发送单次等待使用 wait_for；完整 Agent 安装态业务复验 1 项通过（270.99 秒）。
 
 wait_for 复验：sidecar。Client 单次请求使用 wait_for，Unix 真实安装与原生连接边界四项复验通过（20.24 秒）。
+
+wait_for 复验：sidecar-unix。Unix 的显式 TIMER 依赖与连接生命周期继续通过同组四项真实安装场景。
 
 零时限语义按 `395cbddd-8a77-58fd-a838-2121585bb48c`、
 `ad9831c4-a330-5068-8745-be2984995cfe` 收敛到 asyncio 的实际行为。
@@ -607,3 +612,5 @@ SQLite 8 项、Unix sidecar 4 项、消息 1 项、提醒 1 项及 Agent 完整�
 零预算修订：channel。准备和发送继续通过 wait_for 使用正预算及公共原生取消语义，Agent 安装态实际发送与恢复通过。
 
 零预算修订：sidecar。客户端单次请求继续使用公共 wait_for；四项真实 Unix／独立安装客户端与连接边界通过。
+
+零预算修订：sidecar-unix。既有显式 TIMER 声明和客户端装配保持，四项本地原生连接业务通过。
