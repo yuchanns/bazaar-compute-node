@@ -482,11 +482,15 @@ name = "bazaar-contrib-sidecar"
 version = "0.3.0rc6"
 source = { editable = "contrib/sidecar" }
 dependencies = [
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "bazaar-core", editable = "core" }]
+requires-dist = [
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
+    { name = "bazaar-core", editable = "core" },
+]
 
 [[package]]
 name = "bazaar-contrib-sidecar-unix"

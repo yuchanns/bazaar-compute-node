@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from enum import Enum, auto
+from math import ceil
 from types import EllipsisType
-lazy import asyncio
 lazy from collections.abc import Awaitable, Callable
 lazy from typing import Any
+
+from bazaar_contrib_timer import Timer, wait_for
 
 from .wire import Failure, Reference, Request, Result, decode, encode
 
@@ -71,12 +73,14 @@ class Client:
         self,
         send: Callable[[Request], Awaitable[Result | Failure]],
         close: Callable[[], Awaitable[None]],
+        timer: Timer,
         *,
         timeout: float | None = 30,
     ) -> None:
         self.context = Remote(self, 0)
         self.send = send
         self.close = close
+        self.timer = timer
         self.timeout = timeout
         self._state = _State.OPEN
 
@@ -93,8 +97,12 @@ class Client:
     ) -> Any:
         if self._state is _State.CLOSED:
             raise ConnectionError("the sidecar connection has closed")
-        async with asyncio.timeout(self.timeout if timeout is ... else timeout):
-            response = await self.send(request)
+        timeout = self.timeout if timeout is ... else timeout
+        response = await wait_for(
+            self.timer,
+            self.send(request),
+            None if timeout is None else ceil(timeout * 1000),
+        )
         if isinstance(response, Failure):
             raise RemoteError(response.type, response.message)
         return decode(response.value, lambda value: Remote(self, value.id))

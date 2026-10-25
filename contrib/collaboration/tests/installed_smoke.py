@@ -230,7 +230,11 @@ async def exercise(directory: Path):
             yield
 
         composition = await asyncio.to_thread(
-            load, (ContribSpec(contrib=native, config={"endpoint": endpoint}),)
+            load,
+            (
+                ContribSpec(contrib="timer-wheel"),
+                ContribSpec(contrib=native, config={"endpoint": endpoint}),
+            ),
         )
         composition = composition.model_copy(
             update={
