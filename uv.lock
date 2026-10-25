@@ -533,6 +533,7 @@ source = { editable = "contrib/sqlite" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "bazaar-contrib-storage" },
+    { name = "bazaar-contrib-timer" },
     { name = "bazaar-core" },
     { name = "jinja2" },
     { name = "pydantic" },
@@ -542,6 +543,7 @@ dependencies = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
+    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
     { name = "bazaar-core", editable = "core" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "pydantic", specifier = ">=2.12.0" },

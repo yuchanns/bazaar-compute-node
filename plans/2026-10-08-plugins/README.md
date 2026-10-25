@@ -569,6 +569,10 @@ native edges 单项通过（7.43 秒），agent-command 两项通过（125.60 �
 迁移提交：reminder。启动恢复、停止等待、失败重试和命令排空四处使用所属 Timer，保留零秒排空和取消传播。
 现有提醒安装态业务 1 项通过（39.92 秒），真实 timer-wheel 场景 11 项通过（3.29 秒）。
 
+迁移提交：sqlite。数据库插件显式接受 TIMER，open_database 将其交给执行器用于闲置连接回收和有预算的停止。
+现有数据库 8 项、schema 3 项、历史迁移 37 项业务测试通过；历史迁移独立安装复验 1 项通过（11.17 秒）。
+相关现有测试使用真实 TimerWheel 装配，原生 busy timeout 与 SQL 执行预算继续由 SQLite 驱动负责。
+
 同一迁移任务按 `4ac73882-0828-5c7c-bfc9-56c26f50367e` 补充公开的
 `wait_for(timer, awaitable, delay_ms)`，泛型结果直接返回被等待对象的结果。
 它复用同包 timeout 的到期取消、外部取消和清理逻辑，保持毫秒与 None 语义。
@@ -597,6 +601,8 @@ wait_for 复验：sidecar-windows。Windows 显式 TIMER 绑定保持原迁移�
 wait_for 复验：messages-node。排空的单次等待改用 wait_for，保留 shield 与零预算分支；安装态业务复验 1 项通过（44.20 秒）。
 
 wait_for 复验：reminder。停止、重试与排空使用 wait_for，启动多步恢复继续使用 timeout；安装态业务复验 1 项通过（41.72 秒）。
+
+wait_for 复验：sqlite。闲置回收与停止使用 wait_for；真实文件数据库 8 项复验通过（0.34 秒），依赖锁保持已核对的规范内容。
 
 零时限语义按 `395cbddd-8a77-58fd-a838-2121585bb48c`、
 `ad9831c4-a330-5068-8745-be2984995cfe` 收敛到 asyncio 的实际行为。
@@ -635,3 +641,15 @@ SQLite 8 项、Unix sidecar 4 项、消息 1 项、提醒 1 项及 Agent 完整�
 零预算修订：messages-node。排空直接调用公共 wait_for，移除调用方重复的零预算分支；消息安装态业务 1 项通过（42.50 秒）。
 
 零预算修订：reminder。排空直接使用公共 wait_for 的非正预算语义，保持启动多步 timeout；提醒安装态业务 1 项通过（39.39 秒）。
+
+零预算修订：sqlite。数据库期限继续通过公共 wait_for；八项数据库场景通过，Agent 完整安装业务 1 项通过（274.62 秒）。
+
+零时限与原生取消修订的最终 CI：实际验收提交 `24803dcb2df824fe391b2564014647553d30d3a2`，
+[CI 40212651594](https://github.com/yuchanns/bazaar-compute-node/actions/runs/40212651594)
+全部二十七项任务成功，二十五个包测试任务共 162 次测试执行通过。
+完整日志核对真实时间轮 14 项（3.27 秒），SQLite 8 项、schema 3 项、历史迁移 38 项；
+Unix sidecar 在 Linux／macOS 各 4 项（10.23／16.98 秒），Windows 命名管道 4 项（20.89 秒）。
+Agent 完整安装态验收 Linux／Windows 各 1 项（319.89／398.25 秒），
+消息、提醒、协作、命令以及双系统 manager、配置任务均成功。
+完整日志 ZIP 已下载并通过 CRC 校验，逐任务核对实际 checkout 提交，未重复计入分步日志。
+本次结果回填仅更新原计划，生产代码、测试和依赖内容与上述实际验收版本保持一致。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from enum import Enum, auto
+from math import ceil
 from pathlib import Path
 lazy import asyncio
 lazy import os
@@ -12,6 +13,7 @@ lazy from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 lazy from typing import Self
 
 import bazaar_contrib_storage as storage
+from bazaar_contrib_timer import Timer, wait_for
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 lazy import aiosqlite
 lazy from jinja2 import Environment
@@ -274,7 +276,9 @@ async def _connect(
 
 
 @asynccontextmanager
-async def open_database(config: SqliteConfig) -> AsyncIterator[SqliteDatabase]:
+async def open_database(
+    config: SqliteConfig, timer: Timer
+) -> AsyncIterator[SqliteDatabase]:
     templates = await asyncio.to_thread(load_templates)
     path = (
         config.path
@@ -297,6 +301,7 @@ async def open_database(config: SqliteConfig) -> AsyncIterator[SqliteDatabase]:
             executor = SqliteExecutor(
                 writer,
                 readers,
+                timer=timer,
                 reader_factory=lambda: _connect(
                     path, config, templates, query_only=True
                 ),
@@ -310,8 +315,9 @@ async def open_database(config: SqliteConfig) -> AsyncIterator[SqliteDatabase]:
                 yield SqliteDatabase(executor, templates)
             finally:
                 try:
-                    async with asyncio.timeout(config.shutdown_timeout):
-                        await executor.stop()
+                    await wait_for(
+                        timer, executor.stop(), ceil(config.shutdown_timeout * 1000)
+                    )
                 except BaseException:
                     await asyncio.shield(executor.abort())
                     raise

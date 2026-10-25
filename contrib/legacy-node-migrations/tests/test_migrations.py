@@ -10,6 +10,7 @@ import pytest
 from bazaar_contrib_schema import SCHEMA, Schema
 from bazaar_contrib_sqlite import SqliteConfig, open_database
 from bazaar_contrib_storage import Select
+from bazaar_contrib_timer import Timer
 
 from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
 
@@ -85,6 +86,7 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
     tmp_path: Path,
     version: int,
     modules,
+    timer: Timer,
 ):
     root = (await asyncio.to_thread(Path(__file__).resolve)).parents[3]
     path = tmp_path / "node.sqlite3"
@@ -102,8 +104,8 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
     _, stderr = await process.communicate()
     assert process.returncode == 0, stderr.decode()
     async with (
-        open_database(SqliteConfig(path=path)) as database,
-        open_database(SqliteConfig(path=expected)) as reference,
+        open_database(SqliteConfig(path=path), timer=timer) as database,
+        open_database(SqliteConfig(path=expected), timer=timer) as reference,
     ):
         original = await database.select(Select(table="schema_migrations"))
         schema = Schema(database)
@@ -122,12 +124,12 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
 
 
 async def test_new_database_uses_current_baseline_and_retains_new_data(
-    tmp_path: Path, modules
+    tmp_path: Path, modules, timer: Timer
 ):
     from bazaar_contrib_storage import Insert
 
     path = tmp_path / "fresh.sqlite3"
-    async with open_database(SqliteConfig(path=path)) as database:
+    async with open_database(SqliteConfig(path=path), timer=timer) as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, modules):
@@ -155,12 +157,12 @@ async def test_new_database_uses_current_baseline_and_retains_new_data(
 
 
 async def test_current_messages_keep_search_in_sync_with_the_sequence_key(
-    tmp_path: Path, modules
+    tmp_path: Path, modules, timer: Timer
 ):
     import bazaar_contrib_storage as s
 
     async with open_database(
-        SqliteConfig(path=tmp_path / "search.sqlite3")
+        SqliteConfig(path=tmp_path / "search.sqlite3"), timer=timer
     ) as database:
         schema = Schema(database)
         await schema.start()
@@ -212,7 +214,7 @@ async def test_current_messages_keep_search_in_sync_with_the_sequence_key(
 
 
 async def test_registered_03_database_accepts_owned_reminder_versions_and_restart(
-    tmp_path: Path, modules
+    tmp_path: Path, modules, timer: Timer
 ):
     import bazaar_contrib_storage as s
     from bazaar_contrib_schema import Migration, ModuleSchema
@@ -246,7 +248,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
         else module
         for name, module in modules.items()
     }
-    async with open_database(SqliteConfig(path=path)) as database:
+    async with open_database(SqliteConfig(path=path), timer=timer) as database:
         previous = await database.select(Select(table="contrib_schema_migrations"))
         original = await database.select(Select(table="schema_migrations"))
         messages = await database.select(Select(table="messages"))
@@ -263,7 +265,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
         for row in previous:
             assert row in history
     for _ in range(2):
-        async with open_database(SqliteConfig(path=path)) as database:
+        async with open_database(SqliteConfig(path=path), timer=timer) as database:
             schema = Schema(database)
             await schema.start()
             async with registered(schema, dict(reversed(upgraded.items()))):
@@ -287,7 +289,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
 
 
 async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old_records(
-    tmp_path: Path, modules
+    tmp_path: Path, modules, timer: Timer
 ):
     from bazaar_contrib_storage import Insert
 
@@ -301,8 +303,8 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
     )
     await asyncio.to_thread(expected.write_bytes, zlib.decompress(data))
     async with (
-        open_database(SqliteConfig(path=path)) as database,
-        open_database(SqliteConfig(path=expected)) as reference,
+        open_database(SqliteConfig(path=path), timer=timer) as database,
+        open_database(SqliteConfig(path=expected), timer=timer) as reference,
     ):
         previous = await database.select(Select(table="contrib_schema_migrations"))
         original = await database.select(Select(table="schema_migrations"))
@@ -353,7 +355,7 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
 
 
 async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
-    tmp_path: Path, modules
+    tmp_path: Path, modules, timer: Timer
 ):
     import time
 
@@ -377,7 +379,7 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
     path = tmp_path / "lifespans.sqlite3"
     await asyncio.to_thread(path.write_bytes, zlib.decompress(data))
     # Live scheduling requires a consistent fired occurrence and a future due time.
-    async with open_database(SqliteConfig(path=path)) as database:
+    async with open_database(SqliteConfig(path=path), timer=timer) as database:
         await database.update(
             Update(
                 table="reminders",
