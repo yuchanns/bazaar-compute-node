@@ -1,6 +1,7 @@
 # bazaar-contrib-audit
 
-Publish agent execution events through `AUDIT` and subscribe with `AUDIT_EVENT`.
+Enable agent execution audit events. Install and enable an audit subscriber
+contrib to store or forward the events.
 
 ```sh
 bcn contrib add audit --enable

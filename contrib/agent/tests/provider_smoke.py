@@ -601,7 +601,7 @@ async def exercise(path: Path):
         else "\\\\.\\pipe\\bcn-agent-" + str(uuid7())
     )
     await asyncio.to_thread(path.mkdir)
-    workspaces = {name: path / name for name in ("Cloud", "Tifa")}
+    workspaces = {name: path / name for name in ("Cloud", "Tifa", "Barret")}
     drafts = {}
     for name, workspace in workspaces.items():
         await asyncio.to_thread(workspace.mkdir)
@@ -640,9 +640,18 @@ async def exercise(path: Path):
                             "id": name,
                             "name": name,
                             "workspace": str(workspace),
-                            "mode": "session"
-                            if name == "Cloud"
-                            else "dangerous_individual",
+                            "mode": "dangerous_individual"
+                            if name == "Tifa"
+                            else "session",
+                            "session": {
+                                "config": {
+                                    "sandbox": {
+                                        "policy": "danger-full-access"
+                                        if name == "Barret"
+                                        else "workspace-write"
+                                    }
+                                }
+                            },
                             "channel": [{"kind": "test-channel"}],
                             "harness": [
                                 {
@@ -722,7 +731,7 @@ async def exercise(path: Path):
                 for name, workspace in workspaces.items():
                     peer = await connect(workspace / "channel.json", ready, hub)
                     peers.push_async_callback(peer.aclose)
-                    peer.automatic = name == "Tifa"
+                    peer.automatic = name != "Cloud"
                     connected[name] = peer
                 await inbound_context(
                     connected["Cloud"],
@@ -1191,7 +1200,7 @@ async def exercise(path: Path):
     assert await asyncio.to_thread((workspaces["Cloud"] / "secondary.closed").read_text)
     async with aiofiles.open(path / "audit.jsonl") as stream:
         records = [AuditEvent.model_validate_json(line) async for line in stream]
-    assert {"Cloud", "Tifa"} <= {event.context.agent_id for event in records}
+    assert {"Cloud", "Tifa", "Barret"} <= {event.context.agent_id for event in records}
     requests = {
         event.context.turn_id: event
         for event in records

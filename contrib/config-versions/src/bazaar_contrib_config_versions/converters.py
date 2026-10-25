@@ -160,9 +160,16 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
             add(f"{provider.kind}-builder", package)
         item = agent.model_dump(mode="json")
         item["harness"] = item.pop("runtime")
+        if agent.mode == "session":
+            policy = (
+                item["harness"][0].get("sandbox_mode", "workspace-write")
+                if item["harness"]
+                else "workspace-write"
+            )
+            item["session"] = {"config": {"sandbox": {"policy": policy}}}
         for harness in item["harness"]:
-            if "sandbox_mode" in harness:
-                harness["sandbox_policy"] = harness.pop("sandbox_mode")
+            harness.pop("sandbox_mode", None)
+            harness.pop("network_access", None)
         agents.append(item)
         changes.append(
             FieldChange(

@@ -1,40 +1,10 @@
 # bazaar-contrib-harness
 
-Enable the harness provider registry. Install a concrete harness provider separately.
-
-Call a registered builder's `inspect(workspace, timeout=...)` to query availability,
-the provider CLI version, models, reasoning efforts, workspace skills and MCP servers before
-creating an agent or session. The result is a `HarnessInspection`; its `error`
-field reports query failures alongside any metadata already returned.
-
-`HarnessInspection.mcp_servers` contains `HarnessMcpServer` entries with the server
-name, provider-reported authentication status and discovered `HarnessMcpTool` entries.
-Each tool carries its name, optional description and actual JSON input schema.
-Providers query their MCP inventory in the requested workspace and preserve partial
-results in the inspection if a later query fails.
-
-`SessionInput.approval_policy` uses `ApprovalPolicy.ON_REQUEST` or `NEVER`.
-`sandbox_policy` uses `SandboxPolicy.WORKSPACE_WRITE` or `DANGER_FULL_ACCESS`;
-`network_access` carries the selected network permission. The upstream agent
-selects these policies from the session's Actor. Each provider translates them
-into its native protocol and retains them when resuming that session.
-Provider configuration reads the fields it uses and ignores additional fields.
-
-Execution calls return `confirmed` or `failed`. A failed call or terminal output
-carries `HarnessFailure` with a provider-neutral `reason`, the actual `message`
-and an optional original error `code`. `needs_reconciliation` asks the agent to
-query and reconnect to the existing execution before deciding its final result.
-Recovery and retry errors go to audit/logs; Channel feedback shows the final
-failure if no execution provider completes the request.
-
-An approval request offers `allowed_scopes` using `ApprovalScope`, a `StrEnum`
-with `ONCE`, `SESSION`, and `ALWAYS`. `ApprovalResult.scope` selects one of those
-scopes and defaults to `ONCE`. The decision remains `approved` or `rejected`.
-Providers map the selected scope into their own authorization protocol.
-In `dangerous_individual` mode, the agent approves every request directly.
+Enable harness support and install your chosen harness contrib:
 
 ```sh
 bcn contrib add harness --enable
+bcn contrib add HARNESS_KIND --enable
 ```
 
 The corresponding entry in `config.toml`:
@@ -47,3 +17,13 @@ package = "bazaar-contrib-harness~=0.3.0rc1"
 [[contribs.enabled]]
 entry = "harness-builders"
 ```
+
+After enabling a channel contrib, select the harness when creating an agent:
+
+```sh
+bcn agent add --name Desk --channel CHANNEL_KIND --harness HARNESS_KIND
+```
+
+Replace `HARNESS_KIND` and `CHANNEL_KIND` with your enabled contrib names.
+See [agent configuration](../agent/README.md) for permissions and
+[agent commands](../agent-command/README.md) for managing agents.

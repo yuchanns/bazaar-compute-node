@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal, Self
 from uuid import UUID
 lazy from pathlib import Path
 
 from bazaar_contrib_channel import ChannelBuilder, ChannelBuilderConfig
-from bazaar_contrib_harness import HarnessBuilder, HarnessBuilderConfig, SandboxPolicy
+from bazaar_contrib_harness import (
+    HarnessBuilder,
+    HarnessBuilderConfig,
+    SandboxPolicy,
+)
 from bazaar_core import Composition
 from pydantic import (
     BaseModel,
@@ -22,6 +27,8 @@ from pydantic import (
 if TYPE_CHECKING:
     from .loop import AgentLoop
 
+logger = logging.getLogger(__name__)
+
 
 class ProviderConfig(BaseModel):
     """Keep each provider's selection and parameters with its owning agent."""
@@ -30,11 +37,19 @@ class ProviderConfig(BaseModel):
     kind: str = Field(min_length=1)
 
 
-class HarnessConfig(ProviderConfig):
-    """Select execution policy independently of the provider's own parameters."""
+class SandboxConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    policy: SandboxPolicy = SandboxPolicy.WORKSPACE_WRITE
 
-    sandbox_policy: SandboxPolicy = SandboxPolicy.WORKSPACE_WRITE
-    network_access: bool = True
+
+class SessionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+
+
+class SessionMode(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    config: SessionConfig = Field(default_factory=SessionConfig)
 
 
 class AgentConfig(BaseModel):
@@ -43,9 +58,20 @@ class AgentConfig(BaseModel):
     name: str = Field(min_length=1)
     workspace: Path | None = None
     mode: Literal["session", "dangerous_individual"] = "session"
+    session: SessionMode | None = None
     idle_timeout: float = Field(default=0, ge=0, allow_inf_nan=False)
     channel: tuple[ProviderConfig, ...] = ()
-    harness: tuple[HarnessConfig, ...] = ()
+    harness: tuple[ProviderConfig, ...] = ()
+
+    @model_validator(mode="after")
+    def session_configuration(self) -> Self:
+        if self.mode != "session" and self.session is not None:
+            logger.warning(
+                "agent %s: session configuration is ignored in %s mode",
+                self.id,
+                self.mode,
+            )
+        return self
 
     def validate_providers(
         self,

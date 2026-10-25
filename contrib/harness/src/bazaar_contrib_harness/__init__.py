@@ -18,7 +18,6 @@ from .contracts import (
     HarnessTurnStream,
 )
 from .models import (
-    ApprovalPolicy,
     ApprovalRequest,
     ApprovalResult,
     ApprovalScope,
@@ -48,7 +47,6 @@ __all__ = [
     "HARNESS_BUILDERS",
     "HARNESS_INPUT",
     "ApprovalHandler",
-    "ApprovalPolicy",
     "ApprovalRequest",
     "ApprovalResult",
     "ApprovalScope",

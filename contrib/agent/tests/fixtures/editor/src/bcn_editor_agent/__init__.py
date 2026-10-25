@@ -240,7 +240,11 @@ async def lifespan(ctx: Context, config: Config):
     harness = HarnessBuilderParameters.builder().compose(
         {"title": config.title},
         HarnessInput(
-            agent_id=config.id, agent_name=config.name, workspace=config.workspace
+            agent_id=config.id,
+            agent_name=config.name,
+            workspace=config.workspace,
+            startup_timeout=60,
+            shutdown_timeout=5,
         ),
     )
     try:

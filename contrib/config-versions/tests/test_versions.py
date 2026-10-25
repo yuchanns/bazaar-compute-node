@@ -89,7 +89,7 @@ async def test_installed_chain_preserves_legacy_identity_and_provider_settings(
         assert harness["model"] == "gpt-6.1-sol"
         assert harness["effort"] == "max"
         assert harness["env"]["CUSTOM_CA"] == "CUSTOM_CA"
-        assert harness["network_access"] is False
+        assert agent["session"]["config"]["sandbox"]["policy"] == "workspace-write"
         assert agent["idle_timeout"] == 12.5
         assert historical.payload["version"] == "4"
         current = await asyncio.to_thread(
@@ -126,6 +126,7 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
             {
                 "kind": "claudecode",
                 "model": "opus",
+                "sandbox_mode": "danger-full-access",
                 "env": {"ANTHROPIC_API_KEY": "KEY_WORK"},
             }
         ],
@@ -169,6 +170,7 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
     v4.payload["agent"][0]["runtime"].append(
         {
             "kind": "codex",
+            "sandbox_mode": "workspace-write",
             "env": {"CODEX_HOME": "CODEX_HOME_WORK"},
             "custom_setting": "retained",
         }
@@ -187,6 +189,7 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
     )
     assert any(channel["kind"] == "lark" for channel in agent["channel"])
     assert agent["harness"][-1]["custom_setting"] == "retained"
+    assert agent["session"]["config"]["sandbox"]["policy"] == "danger-full-access"
 
 
 def test_v4_node_timer_mapping_and_v5_provider_selection(tmp_path: Path, monkeypatch):

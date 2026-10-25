@@ -102,7 +102,9 @@ def parameters(
                 )
             target = providers[position]
         for key in names[:-1]:
-            target = target.setdefault(key, {})
+            if target.get(key) is None:
+                target[key] = {}
+            target = target[key]
         key = names[-1]
         if key == "env" and option.scope == "harness":
             target.setdefault(key, {}).update(option.value)

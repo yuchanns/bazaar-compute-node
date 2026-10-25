@@ -12,11 +12,6 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from .outcomes import HarnessFailure
 
 
-class ApprovalPolicy(StrEnum):
-    ON_REQUEST = "on-request"
-    NEVER = "never"
-
-
 class SandboxPolicy(StrEnum):
     WORKSPACE_WRITE = "workspace-write"
     DANGER_FULL_ACCESS = "danger-full-access"
@@ -27,6 +22,8 @@ class HarnessInput(BaseModel):
     agent_id: str
     agent_name: str
     workspace: Path
+    startup_timeout: float = Field(gt=0, allow_inf_nan=False)
+    shutdown_timeout: float = Field(gt=0, allow_inf_nan=False)
 
 
 class SessionInput(BaseModel):
@@ -35,9 +32,7 @@ class SessionInput(BaseModel):
     workspace: Path
     instructions: tuple[str, ...] = ()
     environment: dict[str, str] = Field(default_factory=dict)
-    approval_policy: ApprovalPolicy = ApprovalPolicy.ON_REQUEST
     sandbox_policy: SandboxPolicy = SandboxPolicy.WORKSPACE_WRITE
-    network_access: bool = True
 
 
 class HarnessSession(BaseModel):

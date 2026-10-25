@@ -2190,17 +2190,19 @@ steering、后台状态、两次初始化／恢复尝试、上下文监听、原
 provider 原样接受 agent 给出的工具通信配置，原生 Codex 协议细节留在独立实现。
 以只读保留的 0.2 Codex 源码和 Codex 0.163.0 实际 app-server schema 为对照。
 
-2026-10-22 review 修订：上游按实际 Actor 实例选定 `ApprovalPolicy.ON_REQUEST／NEVER`、
-`SandboxPolicy.WORKSPACE_WRITE／DANGER_FULL_ACCESS` 及每个 Harness 的 network_access，
-在 AgentLoop.start_session 通过 SessionInput 传入实际策略，HarnessInput 仅保留 Agent 及工作区输入。
+2026-10-25 最终 review 修订：mode 和 `session.config.sandbox.policy` 均保留在 Agent，
+所有 Harness 共用 `SandboxPolicy.WORKSPACE_WRITE／DANGER_FULL_ACCESS`，在 AgentLoop.start_session
+通过 SessionInput 传入实际沙箱策略。移除独立 ApprovalPolicy 与 network_access 开关，网络固定开启。
+provider 保留原生审批请求，宿主按实际沙箱策略选择自动批准或 Channel 人工审批。
 配置在 Actors 构造处转换一次；AgentLoop 不再保存整份 AgentConfig，内部业务不传递 mode。
-ApprovalRoute 直接持有所属 Actor，Agent 实例无条件批准，Thread 实例沿人类消息路由审批。
+ApprovalRoute 持有该回合的实际 SandboxPolicy，full access 自动批准，其余沿人类消息路由审批。
 bcc 在进程入口将环境身份恢复为 Actor，按 Agent 实例登记 inbox；独立 launcher 保留会话绑定前的帮助输出。
 指令模板和进程环境在输出边界将实际 Actor 转回 mode；provider 不接收 mode。
-Codex 的 thread/start、thread/resume 和 turn/start 只转换策略枚举与原生参数，后续 Claude 同样消费这些策略。
-Agent 所属 HarnessConfig 保存各项沙箱／网络设置；具体 provider 配置只读取自身字段，默认忽略未使用字段。
+Codex 的 thread/start、thread/resume 和 turn/start 保留沙箱策略及审批回调，后续 Claude 同样实现这些规则。
+AgentConfig 保存 session 配置，Harness 条目只保留 provider 参数；具体 provider 配置默认忽略未使用字段。
 按 2026-10-22 review 移除 provider 的 extra="forbid" 及上游为其新增的策略字段过滤；
-V4→V5 将历史 runtime.sandbox_mode 映射为 sandbox_policy，逐个保留 Harness 的网络设置。
+V4→V5 在 session 模式只取第一个历史 runtime.sandbox_mode 作为 Agent 的 session.config.sandbox.policy，
+individual 丢弃 session 配置；各 runtime 的 provider 参数继续分别保留，网络不再作为用户配置迁移。
 未支持的交互记录日志并返回原生默认回复，审批默认拒绝；版本读取 provider 自身已安装发行元数据。
 逐项对照 0.2 的请求／审批预算、两次初始化和恢复、60%／20%／10% 退出阶段及会话归属检查；
 删除 provider 自设的 60 秒默认清理预算，使用所属连接实际收到的调用预算，避免跨会话共用最后一次调用的值。
