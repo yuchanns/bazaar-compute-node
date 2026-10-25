@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-contrib-messages"
-version = "0.3.0rc5"
+version = "0.3.0rc6"
 description = "Public message, conversation and service contracts"
 readme = "README.md"
 license = "Apache-2.0"
