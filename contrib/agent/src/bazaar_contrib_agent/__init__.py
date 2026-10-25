@@ -52,7 +52,7 @@ from pydantic import BaseModel, ConfigDict
 
 from . import states
 from .loop import AgentLoop, Runtime
-from .models import Agent, AgentConfig, Config, HarnessConfig, ProviderConfig
+from .models import Agent, AgentConfig, Config, ProviderConfig
 from .registry import AGENTS, SERVICES, AgentInstances, configured, execution
 from .routing import Connection
 from .tool import Tool
@@ -65,7 +65,6 @@ __all__ = [
     "AgentConfig",
     "AgentInstances",
     "Config",
-    "HarnessConfig",
     "ProviderConfig",
     "agent",
     "compose",
@@ -89,7 +88,7 @@ class _ChannelConfig(BaseModel):
 
 class _HarnessConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    provider: HarnessConfig
+    provider: ProviderConfig
     builder: HarnessBuilder
     priority: int
 
@@ -267,6 +266,8 @@ async def harness_lifespan(ctx: Context, config: _HarnessConfig):
             agent_id=agent.id,
             agent_name=agent.name,
             workspace=agent.workspace,
+            startup_timeout=60,
+            shutdown_timeout=5,
         ),
     )
     composition = composition.model_copy(

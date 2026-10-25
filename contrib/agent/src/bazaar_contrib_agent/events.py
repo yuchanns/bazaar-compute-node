@@ -17,8 +17,8 @@ from bazaar_contrib_harness import (
     ApprovalResult,
     ApprovalScope,
     HarnessOutput,
+    SandboxPolicy,
 )
-from bazaar_contrib_messages import Actor, Agent
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class ApprovalRoute:
     sender_id: str
     audit: Audit
     context: AuditContext
-    actor: Actor
+    sandbox_policy: SandboxPolicy
     sender_kind: str = "human"
 
     async def request_approval(
@@ -71,14 +71,14 @@ class ApprovalRoute:
             result = ApprovalResult(
                 request_id=request.request_id, decision="rejected", reason=reason
             )
-        elif isinstance(self.actor, Agent):
+        elif self.sandbox_policy is SandboxPolicy.DANGER_FULL_ACCESS:
             result = ApprovalResult(
                 request_id=request.request_id,
                 decision="approved",
                 scope=next(
                     scope for scope in ApprovalScope if scope in request.allowed_scopes
                 ),
-                reason="This Agent answers for every conversation and allows tool use without asking.",
+                reason="Full-access execution allows tool use without asking.",
             )
         elif self.sender_kind != "human" or not self.sender_id:
             from .instruction import template

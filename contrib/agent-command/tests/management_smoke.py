@@ -172,6 +172,8 @@ async def exercise(path: Path, source: str, tests: Path):
         "--set",
         "agent.idle_timeout=30",
         "--set",
+        "agent.session.config.sandbox.policy=workspace-write",
+        "--set",
         "harness.publication_delay=0.01",
     )
     updated = await agents()
@@ -509,6 +511,8 @@ async def exercise(path: Path, source: str, tests: Path):
             "Updated live desk",
             "--set",
             "harness.title=Updated live report",
+            "--set",
+            "agent.session.config.sandbox.policy=danger-full-access",
         )
         async with control() as client:
             registry = await client.context.call(
@@ -516,6 +520,7 @@ async def exercise(path: Path, source: str, tests: Path):
             )
             await registry.call("wait_applied")
         peer = await connect("Live")
+        peer.automatic = True
         stack.push_async_callback(peer.aclose)
         message = request.model_copy(
             update={

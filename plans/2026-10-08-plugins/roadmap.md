@@ -208,8 +208,9 @@ Lark／WeCom 实现同一 channel 接口，Claude Code 实现同一 harness 接�
 `bazaar-contrib-harness` 拥有 `Harness`、`HARNESS`、`HarnessBuilder`、会话与 turn 输入、指令和工具环境、可取消的输出流、审批事件、能力／模型／skills 查询及关闭结果。
 公共 `HarnessBuilder.inspect(workspace, timeout)` 统一返回可用性、CLI 版本、模型／推理档位与工作区 skills，
 查询无需 Agent 或运行会话；运行实例不再提供重复的 describe 查询。
-上游 Agent 按实际 Actor 选择 `ApprovalPolicy`、`SandboxPolicy` 枚举和网络权限，通过 SessionInput 传递该会话的实际策略。
-Codex／Claude 只将这些策略转换为各自原生参数；Harness 输入不携带 Agent 的 mode。
+上游 Agent 按自己的 mode 和 session 配置选择共用的 `SandboxPolicy`，通过 SessionInput 向各 Harness 传递实际沙箱策略。
+full access 由宿主自动审批，其余通过 Channel 审批卡处理；provider 固定开启网络并转发原生审批请求。
+Codex／Claude 负责原生参数映射，Harness 输入不携带 Agent 的 mode，也不提供独立审批或网络开关。
 输入与结果在公共接口边界由 Pydantic 校验；双方通过公共审批标识关联请求和结果。
 审批请求／决定／结果由 harness 公共包拥有，channel 使用同一载荷展示审批并收集结果。
 agent 校验审批与当前 session／turn 及原 request_id 的关联；不匹配时记录 warning 日志，并返回关联原请求、带 reason 的 rejected 决定，审计保留实际请求与返回决定。

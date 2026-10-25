@@ -25,7 +25,6 @@ from bazaar_contrib_channel import (
 )
 from bazaar_contrib_collaboration import Collaboration, CollaborationService
 from bazaar_contrib_harness import (
-    ApprovalPolicy,
     Harness,
     HarnessFailure,
     HarnessFailureReason,
@@ -62,7 +61,7 @@ from bazaar_core import TaskFailureSignal
 from . import states
 from .events import ApprovalRoute, forward
 from .instruction import DeveloperInstructionContext
-from .models import Agent, AgentConfig, HarnessConfig
+from .models import Agent, AgentConfig, ProviderConfig
 from .notice import inbox_notice
 from .routing import Channels, Connection, Ingress
 
@@ -73,7 +72,7 @@ logger = logging.getLogger(__name__)
 class Runtime:
     name: str
     harness: Harness
-    provider: HarnessConfig
+    provider: ProviderConfig
     priority: int
     state: states.Lifecycle = states.Lifecycle.RUNNING
     pending: int = 0
@@ -147,6 +146,13 @@ class AgentLoop:
         self.database = database
         self.tool_config = tool_config
         self.actors = Actors(agent.id, Mode(config.mode))
+        self.sandbox_policy = (
+            SandboxPolicy.DANGER_FULL_ACCESS
+            if config.mode == "dangerous_individual"
+            else config.session.config.sandbox.policy
+            if config.session is not None
+            else SandboxPolicy.WORKSPACE_WRITE
+        )
         self.channels = Channels(
             ChannelIdentity(id=agent.id, name=agent.name), channel_order
         )
@@ -386,17 +392,16 @@ class AgentLoop:
         self, inbound: InboundMessage, connection: Connection, runtime: Runtime | None
     ) -> None:
         channel = connection.channel.get_identity()
-        context = AuditContext(
-            agent_id=self.agent.id,
-            channel=connection.kind,
-            target_kind=inbound.target.kind,
-            thread_id=inbound.thread_id,
-            message_id=inbound.id,
-            sender_id=inbound.sender.id,
-        )
         await self.audit.publish(
             "channel.received",
-            context=context,
+            context=AuditContext(
+                agent_id=self.agent.id,
+                channel=connection.kind,
+                target_kind=inbound.target.kind,
+                thread_id=inbound.thread_id,
+                message_id=inbound.id,
+                sender_id=inbound.sender.id,
+            ),
             payload=inbound.model_dump(mode="json"),
             occurred_at_ms=inbound.occurred_at_ms,
         )
@@ -566,13 +571,7 @@ class AgentLoop:
                 "BCN_RUNTIME_SESSION_ID": session_id,
                 "BCN_COMMAND_CAPABILITY": capability,
             },
-            approval_policy=ApprovalPolicy.NEVER
-            if isinstance(loop.actor, AgentActor)
-            else ApprovalPolicy.ON_REQUEST,
-            sandbox_policy=SandboxPolicy.DANGER_FULL_ACCESS
-            if isinstance(loop.actor, AgentActor)
-            else runtime.provider.sandbox_policy,
-            network_access=runtime.provider.network_access,
+            sandbox_policy=self.sandbox_policy,
         )
         context = AuditContext(
             agent_id=self.agent.id,
@@ -623,7 +622,9 @@ class AgentLoop:
         if binding is not None:
             session, runtime = binding.session, binding.runtime
             context = AuditContext(
-                agent_id=self.agent.id, harness=runtime.name, session_id=session.id
+                agent_id=self.agent.id,
+                harness=runtime.name,
+                session_id=session.id,
             )
             await self.audit.publish(
                 "harness.session.stopping",
@@ -649,7 +650,10 @@ class AgentLoop:
             task.add_done_callback(done)
 
     async def close_runtime(
-        self, runtime: Runtime, session: HarnessSession, context: AuditContext
+        self,
+        runtime: Runtime,
+        session: HarnessSession,
+        context: AuditContext,
     ) -> None:
         try:
             result = await runtime.harness.stop_session(session, timeout=600)
@@ -1056,6 +1060,7 @@ class AgentLoop:
                         states.Recovering(binding, event.failure)
                         if event.failure is not None
                         and event.failure.needs_reconciliation
+                        and event.failure.reason is not HarnessFailureReason.INTERRUPTED
                         else states.Idle(binding)
                     )
                     return event
@@ -1223,7 +1228,7 @@ class AgentLoop:
                     "" if anchor.sender is None else anchor.sender.id or "",
                     self.audit,
                     context,
-                    actor=loop.actor,
+                    sandbox_policy=self.sandbox_policy,
                     sender_kind=anchor.sender_kind.value,
                 )
                 try:
@@ -1393,8 +1398,8 @@ class AgentLoop:
                             )
                     active.state = states.TurnState.FINISHED
                     if outcome.kind == "failed":
+                        failure = cast(HarnessFailure, outcome.failure)
                         if binding is not None:
-                            failure = cast(HarnessFailure, outcome.failure)
                             outcome = outcome.model_copy(
                                 update={
                                     "text": outcome.text.replace(
@@ -1413,22 +1418,23 @@ class AgentLoop:
                                     ),
                                 }
                             )
-                        if not isinstance(loop.state, states.Idle):
-                            await self.close_session(loop)
-                        runtime.banned_until_ms = self.timer.now_ms + 3_600_000
-                        await self.audit.publish(
-                            "harness.pool.banned",
-                            context=context,
-                            payload={
-                                "ban_until_ms": runtime.banned_until_ms,
-                                "terminal_state": outcome.kind,
-                            },
-                        )
-                        alternative = self.select(exclude=attempted)
-                        if alternative is not None:
-                            await self.close_session(loop)
-                            runtime = alternative
-                            continue
+                        if failure.reason is not HarnessFailureReason.INTERRUPTED:
+                            if not isinstance(loop.state, states.Idle):
+                                await self.close_session(loop)
+                            runtime.banned_until_ms = self.timer.now_ms + 3_600_000
+                            await self.audit.publish(
+                                "harness.pool.banned",
+                                context=context,
+                                payload={
+                                    "ban_until_ms": runtime.banned_until_ms,
+                                    "terminal_state": outcome.kind,
+                                },
+                            )
+                            alternative = self.select(exclude=attempted)
+                            if alternative is not None:
+                                await self.close_session(loop)
+                                runtime = alternative
+                                continue
                     elif outcome.kind == "completed" and runtime.banned_until_ms:
                         runtime.banned_until_ms = 0
                         await self.audit.publish(

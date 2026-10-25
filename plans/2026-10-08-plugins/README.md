@@ -388,3 +388,101 @@ BCN CI 逐包构建独立 wheel／sdist，以必要包产物及固定的独立�
 独立安装验收继续验证工作目录和会话关联，移除对这两项提示展示的旧要求。
 验证包括真实模板渲染、agent 包的 Ruff 检查和格式检查、仓库根目录的 Pyright/LSP 检查，
 以及 wheel、sdist 的独立安装验收和发行包内模板核对。
+
+## Codex 行为对照后的宿主契约（2026-10-25）
+
+开发线程在 `46341e85-6dbe-5a66-b94c-1cf6ee3d91dc` 确认九项决定和审计失败隔离，
+要求主仓库从 `0.3` 建分支并提交 PR，完成后等待 review。
+第 2 项按 `20a6edaa-99ea-5767-a131-88c9064f548e`、`1357d54e-71b0-519e-89d8-fe9e95180a4a`
+的最终 review 决定，将 session 沙箱配置收拢到 Agent，所有 Harness 共用，审批由实际沙箱权限决定，网络固定开启；
+第 6 项按 `678aca6f-389a-5c8b-ad39-2827685f0436` 将原生 interrupted 作为已确认取消，
+只报告结构化中断错误。其余故障处理、第 7 项调用预算与退出、第 9 项事件投影沿用 0.2。
+
+### Task 1：宿主策略、生命周期输入及审计失败边界
+
+Agent 的 mode 继续决定按 Thread 或整个 Agent 处理消息，权限设置也由所属 Agent 统一提供。
+session 的沙箱配置位于 Agent 的 `session.config.sandbox.policy`，取值为 workspace-write 或
+danger-full-access，省略时默认 workspace-write；dangerous_individual 固定使用 full access，
+携带 session 配置时仅记录 warning 并忽略该配置，继续启动。
+Harness 选项只保留 provider 自身参数。
+命令编辑器沿 `--set` 路径赋值时，为缺省或 `None` 的中间配置节点创建字典，继续向下赋值。
+Agent 的 session 保持可省略，首次通过 `agent edit` 修改 `session.config.sandbox.policy` 可正常保存并应用。
+公共 `SessionInput` 只携带实际 SandboxPolicy，移除 ApprovalPolicy 与 network_access 开关。
+provider 固定开启网络、保留原生审批回调；宿主先校验请求的 session／turn 关联，
+full access 自动返回 approved，其余沙箱使用原有 Channel 审批卡收集人工决定。
+原生已允许而没有产生审批请求的操作正常执行，provider 不使用 never 禁用审批请求。
+
+V4→V5 在 session 模式只取第一个历史 runtime 的 sandbox_mode，迁移到 Agent 的 session 配置，
+无 runtime 或未指定沙箱时使用 workspace-write；individual 直接丢弃 session 配置。
+各个 runtime 的 provider 参数仍分别迁移到 harness，不合并或删除 runtime。
+移除旧 network_access 用户选项，provider 的 model、effort、env 等实际参数继续保留。
+V5 的 contribs 文档结构不变，既有更早版本转换继续沿当前版本链执行。
+
+旧版组合根分别提供启动 60 秒、普通调用 600 秒及关闭 5 秒，恢复调用使用启动预算。
+当前无参数的 provider lifespan 关闭无法取得独立关闭预算，初始化也只能复用普通调用预算。
+`HarnessInput` 增加调用者必须提供的 startup_timeout、shutdown_timeout，使用接口边界校验，
+默认 agent 在装配 provider 时明确传入原有 60／5 秒；每次调用仍使用既定调用预算。
+独立 agent 消费者按同一公共契约明确提供自身生命周期预算。
+
+`NodeAudit.publish` 仅捕获 `ctx.announce` 的事件投递异常，记录日志后隔离该发布失败。
+事件构造与模型校验正常执行，构造或校验错误正常抛出。
+审计接口接收直接构造的 `AuditContext` 和 `JsonValue` payload，调用方直接执行
+`model_dump(mode="json")` 并传值，保留已有的凭据字段排除；调用方序列化位于 publish 的捕获范围之外。
+按 `afc9531b-02f7-5aac-a4f1-934b4e4c3db3` 和 `04e43538-afc7-5b42-9af7-37a5f2ff78db`
+的 review 意见移除 context 与 payload 的延迟构造及其 Callable 传递。
+消息、协作、提醒直接构造审计记录并调用 `publish`，移除包住整段构造的三处异常捕获。
+该边界按 `1f46641a-aadc-5fe9-8009-4283bb05b827` 的 review 收敛到事件投递，
+调用方的 context／payload 组装、序列化与校验错误正常抛出。
+原生中断结果使当前回合结束并报告错误，跳过恢复、provider 故障封禁及替代执行。
+
+验证采用现有独立 wheel／sdist agent 消费者与真实文件／子进程业务场景，
+通过现有 TCP Channel 场景验证受限 session 人工审批、full-access session 和 individual 自动审批，
+其中 individual 携带 workspace-write 的 session 配置，验证仍按 full access 执行业务。
+既有 agent-command 安装验收通过 CLI 首次设置离线 Agent 的 workspace-write，
+并在运行中为另一默认 Agent 首次设置 danger-full-access，再通过 Channel 完成自动审批和文件报告业务。
+核对实际文件写入及 Thread／Agent 会话归属；既有转换测试使用不同 runtime 沙箱值验证首项选择。
+执行 Ruff、格式检查、仓库根目录 Pyright/LSP，以及受影响包的构建安装检查。
+主仓库形成一个签名提交和指向 `0.3` 的 PR，等待人工 review。
+
+上一轮 Task 1 本地验证结果：受影响 Python 源码的 Ruff 与格式检查通过，
+仓库根目录要求的 Pyright/LSP 检查通过；既有 agent 独立 wheel／sdist 消费者
+1 项通过（234.91 秒），消息、协作、提醒的安装态业务测试各 1 项通过。
+本轮 Agent 共用 session 配置修订验证完成：Ruff／格式检查 51 个文件及仓库根目录 Pyright/LSP 通过，
+既有 agent 独立 wheel／sdist 安装验收 1 项通过（272.52 秒），
+agent-command 的 venv／uv tool 安装验收 2 项通过（124.62 秒），
+config-versions 转换测试 3 项通过（0.16 秒）。
+实际转换器产出的两种 mode 配置均通过目标 Agent 配置模型校验，
+验证首个 runtime 的沙箱选择及各 runtime provider 参数保留。
+Codex 对新契约的真实接入验收在 Task 2 执行。
+
+payload 直接传值修订的 Ruff、格式检查及仓库根目录 Pyright/LSP 通过，
+既有 agent 独立 wheel／sdist 安装验收 1 项通过（264.88 秒）。
+
+非 session 配置仅 warning 的修订通过 Ruff、格式检查及仓库根目录 Pyright/LSP；
+既有 agent 独立 wheel／sdist 安装验收 1 项通过（261.80 秒），
+确认 individual 携带 session 配置仍可启动、自动审批并完成文件操作、配置重载与进程恢复。
+
+审计异常边界收敛的 Ruff、格式检查及仓库根目录 Pyright/LSP 通过；
+既有 wheel／sdist 安装态业务验收 agent 1 项通过（268.92 秒）、
+消息 1 项通过（43.27 秒）、协作 1 项通过（16.57 秒）、提醒 1 项通过（40.09 秒）。
+
+CLI 首次编辑可选 session 配置的修订通过 Ruff、格式检查及仓库根目录 Pyright/LSP；
+既有 agent-command venv／uv tool 安装验收 2 项通过（117.84 秒），
+离线首次设置受限策略、运行中首次切换 full access 并生成文件报告均通过。
+
+README 按 `b8dc4a40-e061-5e46-acac-6a2602ddea3e` 的 review 收敛为安装、配置与使用：
+agent 提供创建、权限调整及两种会话模式的命令示例；harness 提供安装与 contrib 选择；
+audit 说明启用及订阅 contrib 的使用。使用说明中的可选模块统一称为 channel／harness contribs。
+配置归属、版本转换、生命周期预算、审批路由、
+中断处理和审计异常边界统一记录在本计划，接口说明由框架设计文档维护。
+本次文档示例通过现有命令参数解析与 AgentConfig 校验，TOML 和相对链接核对通过；
+当前 app／core／contrib／scripts 的 Ruff 检查及全仓库格式检查通过。
+
+### Task 2：Codex provider 衔接
+
+在 Task 1 review 后，Codex 按实际 SandboxPolicy 和分阶段生命周期预算映射原生请求，
+固定开启网络并接入原生审批请求，审批决定统一交给宿主的 full-access／人工路由处理；
+恢复、非主动取消故障处理、写入与退出等待、子进程回收及输出投影按已确认的 0.2 行为实现，
+保留新的审批能力、审批异常拒绝及关闭活动流时中断的决定。
+通过独立仓库的 TestChannel、隔离 BCN 及真实 Codex 路径验证业务结果，
+在原验收计划登记所用契约版本、提交与实际证据。
