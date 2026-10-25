@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-contrib-sqlite"
-version = "0.3.0rc6"
+version = "0.3.0rc7"
 description = "SQLite implementation of the shared storage contract"
 readme = "README.md"
 license = "Apache-2.0"
