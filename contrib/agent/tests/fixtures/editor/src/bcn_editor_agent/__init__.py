@@ -29,12 +29,13 @@ from bazaar_contrib_harness import (
     HarnessSession,
     HarnessTurn,
     SessionInput,
+    harness_builder_key,
 )
 from bazaar_contrib_messages import MESSAGES, Actor, Actors, Mode, Thread
 from bazaar_contrib_messages.models import Message, SenderIdentity
 from bazaar_contrib_messages.states import ChannelTargetKind, MessageDirection, Review
 from bazaar_core import Composition, Context, Contrib, ContribEntry
-from bcn_agent_workbench import ChannelBuilderParameters, HarnessBuilderParameters
+from bcn_agent_workbench import ChannelBuilderParameters
 from pydantic import BaseModel, ConfigDict
 
 from bazaar_contrib_agent import AgentConfig
@@ -237,7 +238,7 @@ async def lifespan(ctx: Context, config: Config):
             agent_id=config.id, agent_name=config.name, workspace=config.workspace
         ),
     )
-    harness = HarnessBuilderParameters.builder().compose(
+    harness = ctx.accept(harness_builder_key("document")).compose(
         {"title": config.title},
         HarnessInput(
             agent_id=config.id,
@@ -278,4 +279,8 @@ async def lifespan(ctx: Context, config: Config):
         await asyncio.to_thread(remove, command)
 
 
-editor = Contrib(config=Config, accepts=[MESSAGES, CONFIGURATION], lifespan=lifespan)
+editor = Contrib(
+    config=Config,
+    accepts=[MESSAGES, CONFIGURATION, harness_builder_key("document")],
+    lifespan=lifespan,
+)

@@ -13,6 +13,7 @@ import threading
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, asynccontextmanager
 from functools import partial
+from math import ceil
 from pathlib import Path
 from time import time_ns
 from typing import Any, ClassVar, Literal, cast
@@ -56,6 +57,7 @@ from bazaar_contrib_harness import (
     ApprovalHandler,
     ApprovalRequest,
     ApprovalResult,
+    HarnessBuilder,
     HarnessBuilderConfig,
     HarnessExpire,
     HarnessFailure,
@@ -73,6 +75,8 @@ from bazaar_contrib_harness import (
     SessionInput,
     harness_builder_key,
 )
+from bazaar_contrib_timer import TIMER, Timer
+from bazaar_contrib_timer import timeout as timer_timeout
 from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribSpec, load
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
@@ -815,33 +819,41 @@ class HarnessBuilderParameters(HarnessBuilderConfig):
     entity_model: ClassVar[type[BaseModel]] = HarnessConfig
     entry: ClassVar[Contrib[Any]] = harness
 
-    @classmethod
-    async def inspect(cls, workspace: Path, *, timeout: float) -> HarnessInspection:
-        return HarnessInspection(
-            available=await asyncio.to_thread(
-                Path(__file__).with_name("worker.py").is_file
-            ),
-            version=sys.version.split()[0],
-            skills=(
-                HarnessSkill(
-                    name="document-report",
-                    description="Count a document and save its report",
-                    source=__name__,
+
+class Builder(HarnessBuilder):
+    def __init__(self, definition: type[HarnessBuilderConfig], timer: Timer):
+        super().__init__(definition)
+        self.timer = timer
+
+    async def inspect(self, workspace: Path, *, timeout: float) -> HarnessInspection:
+        async with timer_timeout(self.timer, ceil(timeout * 1000)):
+            return HarnessInspection(
+                available=await asyncio.to_thread(
+                    Path(__file__).with_name("worker.py").is_file
                 ),
-            ),
-        )
+                version=sys.version.split()[0],
+                skills=(
+                    HarnessSkill(
+                        name="document-report",
+                        description="Count a document and save its report",
+                        source=__name__,
+                    ),
+                ),
+            )
 
 
 @asynccontextmanager
 async def harness_builder_lifespan(ctx: Context, config: HarnessBuilderParameters):
-    with ctx.accept(HARNESS_BUILDERS).register(config.builder()) as builder:
+    with ctx.accept(HARNESS_BUILDERS).register(
+        Builder(type(config), ctx.accept(TIMER))
+    ) as builder:
         ctx.offer(harness_builder_key(builder.kind), builder)
         yield
 
 
 harness_builder = Contrib(
     config=HarnessBuilderParameters,
-    accepts=[HARNESS_BUILDERS],
+    accepts=[HARNESS_BUILDERS, TIMER],
     offers=[harness_builder_key("document")],
     lifespan=harness_builder_lifespan,
 )

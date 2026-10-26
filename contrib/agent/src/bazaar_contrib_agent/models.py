@@ -75,8 +75,8 @@ class AgentConfig(BaseModel):
 
     def validate_providers(
         self,
-        channels: Mapping[str, ChannelBuilder],
-        harnesses: Mapping[str, HarnessBuilder],
+        channels: Mapping[str, ChannelBuilder | type[ChannelBuilderConfig]],
+        harnesses: Mapping[str, HarnessBuilder | type[HarnessBuilderConfig]],
     ) -> None:
         for providers, builders in (
             (self.channel, channels),
@@ -107,18 +107,17 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def providers(self, info: ValidationInfo) -> Self:
         if isinstance(info.context, Composition):
-            channels: dict[str, ChannelBuilder] = {}
-            harnesses: dict[str, HarnessBuilder] = {}
+            channels: dict[str, type[ChannelBuilderConfig]] = {}
+            harnesses: dict[str, type[HarnessBuilderConfig]] = {}
             for entry in info.context.entries:
                 model = entry.definition.config
                 if model is not None and issubclass(model, ChannelBuilderConfig):
-                    channels[model.kind] = model.builder()
+                    channels[model.kind] = model
                 elif model is not None and issubclass(model, HarnessBuilderConfig):
-                    harnesses[model.kind] = model.builder()
-            from . import compose
+                    harnesses[model.kind] = model
 
             for agent in self.agents:
-                compose(agent, channel_builders=channels, harness_builders=harnesses)
+                agent.validate_providers(channels, harnesses)
         return self
 
 

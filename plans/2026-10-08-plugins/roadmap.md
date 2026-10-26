@@ -208,6 +208,8 @@ Lark／WeCom 实现同一 channel 接口，Claude Code 实现同一 harness 接�
 `bazaar-contrib-harness` 拥有 `Harness`、`HARNESS`、`HarnessBuilder`、会话与 turn 输入、指令和工具环境、可取消的输出流、审批事件、能力／模型／skills 查询及关闭结果。
 公共 `HarnessBuilder.inspect(workspace, timeout)` 统一返回可用性、CLI 版本、模型／推理档位与工作区 skills，
 查询无需 Agent 或运行会话；运行实例不再提供重复的 describe 查询。
+Builder 在 provider 的 lifespan 内创建并作为服务登记，inspect 直接使用该实例接受的依赖；
+配置类只保留声明信息，查询方从已接受的 builder 服务或注册表取得运行实例。
 上游 Agent 按自己的 mode 和 session 配置选择共用的 `SandboxPolicy`，通过 SessionInput 向各 Harness 传递实际沙箱策略。
 full access 由宿主自动审批，其余通过 Channel 审批卡处理；provider 固定开启网络并转发原生审批请求。
 Codex／Claude 负责原生参数映射，Harness 输入不携带 Agent 的 mode，也不提供独立审批或网络开关。

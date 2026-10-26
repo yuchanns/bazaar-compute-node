@@ -2147,6 +2147,10 @@ Codex 删除 env 别名配置及映射，子进程直接继承节点完整环境
 通用插件查询沿 0.2 IRuntimeBuilder.inspect／models 的实际能力补齐，按 2026-10-22 确认合并为
 HarnessBuilder.inspect(workspace, timeout)，返回 HarnessInspection：可用性、CLI 版本、模型与推理档位、
 skills 和查询错误。删除运行实例的 describe 契约与实现，查询只依赖工作区，不要求 Agent 或会话。
+HarnessBuilder 是由 provider 的 lifespan 创建并登记的运行服务；inspect 由该服务实例实现，
+使用同一 lifespan 通过 accepts 注入的依赖。HarnessBuilderConfig 仅声明 kind、entity_model 和 entry，
+不执行查询或在配置类上创建脱离生命周期的 builder。查询方接受 harness_builder_key(kind)，
+或从已接受的 HARNESS_BUILDERS 注册表取得同一个运行实例。
 Codex 在指定工作区启动独立 app-server，初始化后执行 model/list 和 skills/list，沿公共预算释放所属进程。
 
 2026-10-22 MCP 查询补充（开发线程 `f76e00b5-364c-5de4-a648-b8c0a87738b0`）：

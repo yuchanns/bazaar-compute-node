@@ -38,6 +38,8 @@ async def exercise(path: Path):
             ContribSpec(contrib="schema"),
             ContribSpec(contrib="legacy-node-migrations"),
             ContribSpec(contrib="timer-wheel"),
+            ContribSpec(contrib="harness-builders"),
+            ContribSpec(contrib="document-builder"),
             ContribSpec(contrib="messages-node"),
             ContribSpec(contrib="sidecar"),
             ContribSpec(

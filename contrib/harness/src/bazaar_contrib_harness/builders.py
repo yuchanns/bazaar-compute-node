@@ -27,9 +27,9 @@ def harness_builder_key(kind: str) -> ServiceKey[HarnessBuilder]:
     return ServiceKey[HarnessBuilder](f"harness.builder.{kind}")
 
 
-class HarnessBuilder(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
-    definition: type[HarnessBuilderConfig]
+class HarnessBuilder(ABC):
+    def __init__(self, definition: type[HarnessBuilderConfig]):
+        self.definition = definition
 
     @property
     def kind(self) -> str:
@@ -43,9 +43,9 @@ class HarnessBuilder(BaseModel):
     def entry(self) -> Contrib[Any]:
         return self.definition.entry
 
+    @abstractmethod
     async def inspect(self, workspace: Path, *, timeout: float) -> HarnessInspection:
         """Query the provider without creating an Agent or a Harness session."""
-        return await self.definition.inspect(workspace, timeout=timeout)
 
     def compose(self, values: dict[str, Any], input: HarnessInput) -> Composition:
         config = self.entity_model.model_validate(values)
@@ -65,20 +65,11 @@ class HarnessBuilder(BaseModel):
         )
 
 
-class HarnessBuilderConfig(BaseModel, ABC):
+class HarnessBuilderConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     kind: ClassVar[str]
     entity_model: ClassVar[type[BaseModel]]
     entry: ClassVar[Contrib[Any]]
-
-    @classmethod
-    @abstractmethod
-    async def inspect(cls, workspace: Path, *, timeout: float) -> HarnessInspection:
-        """Report availability, version, models, workspace skills and MCP servers."""
-
-    @classmethod
-    def builder(cls) -> HarnessBuilder:
-        return HarnessBuilder(definition=cls)
 
 
 class HarnessBuilders:

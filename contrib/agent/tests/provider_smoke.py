@@ -22,7 +22,7 @@ from bazaar_contrib_channel import (
     ChannelTargetPresentation,
     SenderIdentity,
 )
-from bazaar_contrib_harness import ApprovalResult, HarnessOutput
+from bazaar_contrib_harness import ApprovalResult, HarnessOutput, harness_builder_key
 from bazaar_core import (
     CONTRIB_CHANGED,
     Blocked,
@@ -38,7 +38,6 @@ from bazaar_core import (
 )
 from bcn_agent_workbench import (
     Attachment,
-    HarnessBuilderParameters,
     configured,
     read_context_cache,
 )
@@ -593,8 +592,6 @@ async def runtime_failures(peer: Peer, draft: Path):
 
 
 async def exercise(path: Path):
-    inspection = await HarnessBuilderParameters.builder().inspect(path, timeout=30)
-    assert inspection.available and inspection.version and inspection.skills
     endpoint = (
         str(path / "sidecar.sock")
         if os.name != "nt"
@@ -683,6 +680,10 @@ async def exercise(path: Path):
 
     @asynccontextmanager
     async def registry(ctx: Context):
+        inspection = await ctx.accept(harness_builder_key("document")).inspect(
+            path, timeout=30
+        )
+        assert inspection.available and inspection.version and inspection.skills
         registries.append(ctx.accept(AGENTS))
         yield
 
@@ -705,7 +706,10 @@ async def exercise(path: Path):
                 *composition.entries,
                 ContribEntry(
                     name="agent-registry",
-                    definition=Contrib(accepts=[AGENTS], lifespan=registry),
+                    definition=Contrib(
+                        accepts=[AGENTS, harness_builder_key("document")],
+                        lifespan=registry,
+                    ),
                 ),
                 ContribEntry(
                     name="ready", definition=Contrib(listen={CONTRIB_CHANGED: changed})

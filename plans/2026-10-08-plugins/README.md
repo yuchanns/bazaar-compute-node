@@ -653,3 +653,42 @@ Agent 完整安装态验收 Linux／Windows 各 1 项（319.89／398.25 秒）�
 消息、提醒、协作、命令以及双系统 manager、配置任务均成功。
 完整日志 ZIP 已下载并通过 CRC 校验，逐任务核对实际 checkout 提交，未重复计入分步日志。
 本次结果回填仅更新原计划，生产代码、测试和依赖内容与上述实际验收版本保持一致。
+
+### Task：HarnessBuilder 查询使用插件实例（2026-10-26）
+
+开发线程 `503d605d-8a89-53e9-a09d-d065fd4fe861`、
+`71d7c2cb-c273-52cd-996d-0c6b46e2d70b` 要求修复 inspect，使查询遵循公共插件装配，
+`c85fb142-0cf5-5b7b-8552-efa4f27de001` 要求使用新的提交。
+已核对当前公共实现：HarnessBuilder.inspect 转调 HarnessBuilderConfig 的类方法，
+配置工厂只能保存定义类型，查询没有承接 provider lifespan 已接受的服务。
+
+HarnessBuilder 改为运行期抽象服务，保留 kind、entity_model、entry、compose 及 inspect 的调用形状；
+具体 provider 在 lifespan 内创建实现，直接在 accepts 声明查询需要的服务并传入实例，
+再通过原有 HARNESS_BUILDERS 与 harness_builder_key(kind) 登记和提供同一个对象。
+HarnessBuilderConfig 只声明元信息，移除配置类上的查询与 builder 工厂。
+Agent 在候选校验时只读取配置声明，在内部 Harness 使用方的 accepts 声明所选 Builder，
+运行时从 Context 取得服务，不把带运行资源的 Builder 放入配置或随候选深拷贝。
+独立 document provider 在查询中使用注入的 TIMER，
+既有查询检查移到真实注册实例的调用方，editor 也从已接受的服务构造局部运行组合。
+公共调用方仍只传 workspace 与 timeout，查询无需 Agent 或会话。
+
+本任务更新公共设计与既有独立安装用例，执行 Ruff、格式、根目录 Pyright/LSP、
+相关 wheel／sdist 构建及安装态业务验收，并以独立签名提交交 review。
+公共契约 review 通过后，按原 Codex 验收计划接入：Builder 直接接受 TIMER，
+通过真实插件装配检查 CLI 发现与查询取消时的进程清理，并登记可安装的契约版本。
+
+本地验证：Ruff、261 个文件的格式检查、Harness 包 Pyright CLI 及仓库根目录要求的
+Pyright/LSP 检查全部通过。既有独立 Agent 安装态验收 **1 passed（261.91 秒）**，
+对 wheel 和 sdist 两种安装分别完成注册 Builder 的 TIMER 查询、默认／独立 Agent 业务、
+文件处理、审批、配置更新、进程恢复和关闭。共构建 26 个包的 52 个 wheel／sdist，
+逐项核对本次五个发行源码文件与 wheel 内容一致；document provider 的元数据包含直接 Timer 依赖。
+共享锁保持原值。该公共修复使用独立签名提交，交人工 review。
+
+公共 Builder 修复的最终 CI：实际验收提交 `864221c612533919f38387c430d4f6bffb5f6b52`，
+[CI 40318246668](https://github.com/yuchanns/bazaar-compute-node/actions/runs/40318246668)
+全部八项作业成功：Plan、Checks 及六个业务作业。六个业务作业共七次测试执行通过，
+其中 Agent 独立 wheel／sdist 安装态验收 Linux／Windows 各一项（236.45／273.56 秒），
+命令两项，消息、协作和提醒各一项。各业务用例使用上述相同提交，注册 Builder 的 TIMER 查询
+随双系统 Agent 安装态验收通过。完整日志 ZIP 已下载并通过 CRC 校验，逐作业核对 checkout。
+本次结果回填仅更新原计划；生产代码、测试、依赖及共享锁与实际验收版本保持一致，
+仍保留为本任务新增的独立签名提交，交人工 review。

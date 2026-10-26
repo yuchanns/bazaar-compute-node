@@ -89,7 +89,6 @@ class _ChannelConfig(BaseModel):
 class _HarnessConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider: ProviderConfig
-    builder: HarnessBuilder
     priority: int
 
 
@@ -260,7 +259,7 @@ async def harness_lifespan(ctx: Context, config: _HarnessConfig):
             await asyncio.gather(task, return_exceptions=True)
             del loop.runtimes[ctx.name]
 
-    composition = config.builder.compose(
+    composition = ctx.accept(harness_builder_key(config.provider.kind)).compose(
         config.provider.model_dump(mode="python", exclude={"kind"}),
         HarnessInput(
             agent_id=agent.id,
@@ -302,7 +301,9 @@ _channel = Contrib(
     config=_ChannelConfig, accepts=[AGENT, _LOOP], lifespan=channel_lifespan
 )
 _harness = Contrib(
-    config=_HarnessConfig, accepts=[AGENT, _LOOP], lifespan=harness_lifespan
+    config=_HarnessConfig,
+    accepts=lambda config: [AGENT, _LOOP, harness_builder_key(config.provider.kind)],
+    lifespan=harness_lifespan,
 )
 
 
@@ -348,8 +349,11 @@ def compose(
                     definition=definition,
                     config={
                         "provider": provider,
-                        "builder": builders[provider.kind],
-                        **({"priority": index} if label == "harness" else {}),
+                        **(
+                            {"priority": index}
+                            if label == "harness"
+                            else {"builder": builders[provider.kind]}
+                        ),
                     },
                     bindings={
                         AGENT: identity.ref(AGENT),
