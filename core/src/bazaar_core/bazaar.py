@@ -586,7 +586,15 @@ class ContribHub:
         for instance, handler in tuple(
             self._listeners.get((event, bindings.get(event)), {}).values()
         ):
-            if isinstance(instance.state, Running):
+            # Dependent teardown can still publish until this listener starts exiting.
+            state = instance.state
+            if isinstance(state, Running) or (
+                isinstance(state, Stopping)
+                and state.phase == "stopping"
+                and state.error is None
+                and instance._ready.is_set()
+                and not instance._stop.is_set()
+            ):
                 invocation = _Invocation()
                 instance._callbacks.add(invocation)
                 invocation.task = group.create_task(
