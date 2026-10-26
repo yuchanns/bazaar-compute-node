@@ -205,6 +205,64 @@ async def test_shutdown_waits_for_sibling_callbacks_before_closing_database(
     await hub.aclose()
 
 
+@pytest.mark.parametrize("shutdown", ("composition", "hub"))
+async def test_shutdown_publishes_final_events_before_closing_the_listener_database(
+    tmp_path: Path, shutdown: str
+):
+    journal = ServiceKey[Database]("journal")
+    path = tmp_path / "final-events.sqlite"
+
+    @asynccontextmanager
+    async def recording(ctx: Context):
+        database = await Database.open(path)
+        try:
+            await database.start()
+            ctx.offer(journal, database)
+            yield
+        finally:
+            await database.aclose()
+
+    async def record(ctx: Context, value: Message):
+        await ctx.accept(journal).insert(ctx.name, value.text)
+
+    @asynccontextmanager
+    async def publishing(ctx: Context):
+        try:
+            yield
+        finally:
+            await ctx.announce(MESSAGE_RECEIVED, Message("final execution outcome"))
+
+    async with ContribHub() as hub:
+        async with hub.enable(
+            Composition(
+                entries=(
+                    ContribEntry(
+                        name="journal",
+                        definition=Contrib(
+                            offers=[journal],
+                            lifespan=recording,
+                            listen={MESSAGE_RECEIVED: record},
+                        ),
+                    ),
+                    ContribEntry(
+                        name="execution",
+                        definition=Contrib(accepts=[journal], lifespan=publishing),
+                    ),
+                )
+            )
+        ):
+            await hub.announce(MESSAGE_RECEIVED, Message("execution started"))
+            if shutdown == "hub":
+                await hub.aclose()
+        database = await Database.open(path)
+        try:
+            messages = await database.messages()
+            assert any(text == "execution started" for _, text in messages)
+            assert any(text == "final execution outcome" for _, text in messages)
+        finally:
+            await database.aclose()
+
+
 async def test_event_parse_error_keeps_other_listeners_running_and_can_be_corrected(
     tmp_path: Path,
     lifespans: AsyncExitStack,
