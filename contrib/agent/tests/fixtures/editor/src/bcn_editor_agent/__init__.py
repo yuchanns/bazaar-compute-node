@@ -205,11 +205,10 @@ async def process(ctx: Context, config: Input):
                 try:
                     async for event in stream:
                         channel.accept_turn_event(event, target=inbound.target)
-                        if event.kind in {
+                        if event.payload.type in {
                             "completed",
                             "failed",
                             "cancelled",
-                            "unknown",
                         }:
                             break
                 finally:

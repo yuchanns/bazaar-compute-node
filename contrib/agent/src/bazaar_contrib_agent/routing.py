@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from uuid import NAMESPACE_URL, uuid5
 lazy import logging
 
 from bazaar_contrib_channel import (
@@ -35,6 +36,7 @@ class Connection:
     provider: ProviderConfig
     priority: int
     state: states.ConnectionState = states.ConnectionState.RUNNING
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +86,36 @@ class Channels:
             raise ValueError(f"Channel is unavailable or ambiguous: {kind}")
         return matches[0]
 
+    def backfill_provider_thread_id(
+        self, provider_thread_id: str, *, channel: str, channel_identity: str
+    ) -> str:
+        connection = self.select(channel, channel_identity)
+        return connection.channel.backfill_provider_thread_id(
+            provider_thread_id, channel=channel, channel_identity=channel_identity
+        )
+
     def dm_address(self, request: DmRequest) -> DmAddress | None:
-        return self.select(
-            request.channel, request.channel_identity
-        ).channel.dm_address(request)
+        connection = self.select(request.channel, request.channel_identity)
+        address = connection.channel.dm_address(request)
+        if address is None:
+            return None
+        return address.model_copy(
+            update={
+                "channel_session_id": str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"bcn:{self.identity.id}:channel-session:{address.channel_session_id}",
+                    )
+                ),
+                "thread_id": str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"bcn:{self.identity.id}:bcn-session:{address.thread_id}",
+                    )
+                ),
+                "channel_identity": connection.channel.get_identity().id,
+            }
+        )
 
     async def prepare_send(
         self, request: ChannelSendRequest
@@ -104,12 +132,10 @@ class Channels:
             try:
                 connection.channel.accept_turn_event(
                     event,
-                    target=ChannelTarget(
-                        kind=destination.kind, thread_id=destination.thread_id
-                    ),
+                    target=destination,
                 )
             except Exception:
-                logger.exception("channel rejected %s", event.kind)
+                logger.exception("channel rejected %s", event.payload.type)
 
     async def request_approval(
         self,

@@ -1432,7 +1432,17 @@ app 的最小 wheel／sdist 验收使用其自举和通用组合，配置选择 
 ### Task 12：为 agent 接入 channel／harness 与所需公共接口
 
 Channel 入站载荷保留 provider 给出的稳定消息、channel session、Thread 身份及原始 provider 消息 ID；
-具体 provider 沿用自身原有 identity 算法，Agent 直接使用这些值进行业务装配和持久化。
+具体 provider 沿用自身原有 identity 算法，Agent 在入站及主动 DM 地址边界按 0.2 的
+`uuid5(NAMESPACE_URL, f"bcn:{agent_id}:{kind}:{provider_local_id}")` 转换 channel-session／bcn-session 身份，
+发送及事件路由继续使用 provider thread。渠道连接就绪后按配置顺序完成旧会话的身份及 provider thread 回填，
+再开始接收入站；公共 Channel 保留 `backfill_provider_thread_id`，Messages 暴露现有回填操作。
+同 agent 的同 kind／bot identity 重复配置在登记时拒绝，并通过既有失败信号结束所属执行组合。
+单个渠道与 Agent 的 `Channels` 聚合遵守同一个完整 `Channel` 协议，消息发送、回合事件及审批消费者均依赖该协议。
+旧会话回填按配置顺序选中渠道，将 `channel`／`channel_identity` 与旧会话 ID 交给聚合对象，
+聚合按同一渠道选择规则委托底层 `Channel.backfill_provider_thread_id`，转换逻辑由具体插件实现。
+ChannelTarget 的消息锚点随回合事件保留，供 Lark reaction typing 等渠道活动使用；普通发送的可选引用由调用方显式指定。
+渠道业务状态由 provider 自持，消费者通过插件服务查询或订阅发布的状态事件，跨进程沿现有 sidecar 调用。
+插件加载与运行状态继续由 core 的既有 status 服务提供。
 附件保留 kind、ready／failed 状态及原始失败说明；provider 未提供发生时间时继续使用接收时间展示。
 入站附件以 `source: AbstractAsyncContextManager[AsyncIterator[bytes]]` 提供明文字节流，消息导入通过
 `async with` 进入源资源作用域、`async for` 逐块消费；正常结束、读取失败及取消都退出并释放资源。
@@ -1444,7 +1454,10 @@ ready 附件必须有 source，failed 附件仅携带失败说明；接口不要
 本次同时交付 `bazaar-contrib-audit` 的发布契约和 NodeAudit 服务，agent 通过 AUDIT 依赖无条件发布当前执行链路的输入、会话／turn、完整输出、审批及关闭事件。
 NodeAudit 使用 ctx.announce(AUDIT_EVENT, event)；公共事件包含 AuditContext、运行标识与发布序号、发生／接收／单调时间及完整 JSON payload。
 发布调用沿用 main `AuditRecorder.append` 对消费异常的日志处理。
-HarnessOutput 的 kind 接受 provider 的事件类别，保留 provider 事件名、会话／turn 关联、发生时间、原始 JSON 与现有公共字段。
+HarnessOutput 的 payload 沿用 0.2 的中立事件模型：ContentDelta 的四类内容及 index，ToolCall 的名称、父调用、输入／输出，
+工具文本／补丁／交互、TokenUsage／UsageUpdated 与上下文压缩；以明确的 payload 联合类型承载，provider 在边界完成原生投影。
+事件类型标识用于公共 Pydantic 模型的 JSON 序列化和还原，Agent／Channel 消费对应中立类型。
+保留 provider 事件名、会话／turn 关联、发生时间与原始 JSON 诊断；TurnFailed 使用已确认的 HarnessFailure，主动取消沿用 TurnCancelled。
 默认声明与 V4→V5 启用 audit；独立 agent 组合显式提供该服务，事件消费者沿普通 listen 订阅。实现按[完整行为事件与 NodeAudit](roadmap.md#完整行为事件与-nodeaudit)的来源和分工交付。
 
 Codex、Claude Code 及 Telegram／Lark／WeCom 等具体 channel 实现统一在 open-bazaar 独立插件仓库维护。agent 声明其实际导入的 audit／channel／harness 发行依赖，初始配置选择 agent 及对应服务入口。V4→V5 按旧 runtime 的 kind 加入所选 Codex／Claude Code 插件及 builder 声明；普通安装由用户通过 bcn contrib add codex／claudecode 选择实现。
@@ -1486,6 +1499,74 @@ builder 配置以 ClassVar 声明 kind、entity_model 和运行 Contrib；共享
 
 验收订阅器使用自身的 asyncio.Lock 串行追加审计 JSONL，锁覆盖文件打开、写入和关闭，
 防止并发事件的文件句柄互相覆盖；退出后仍逐行校验完整 AuditEvent、原始内容及关联和时序。
+
+- [x] 依据 2026-10-27 本线程 43895714-0bda-5b1e-aa50-1de5c328ae93、c072770e-14e9-540c-9575-b60984e39898 的纠正，恢复 0.2 中立输出模型及 Agent／Codex 消费、投影；核对真实进程事件、执行受影响检查后停下 review。
+
+本项独立 wheel／sdist 安装验证已通过：真实文档进程、TCP Channel、文件读写、审批、会话恢复、配置替换、退出及审计订阅继续使用中立载荷。
+主仓根完整 LSP、Codex 联合源码 LSP、双方 Ruff／格式及 provider wheel／sdist 构建通过。
+本地 workspace 使用主仓与 Codex 当前源码、Codex 0.164.0 及本地 Qwen3.5-4B 128K／4 CPU，
+八个真实 TestChannel 场景全部通过（2731.636 秒）：MCP ONCE／SESSION／ALWAYS、BCC、full-access、恢复、指令刷新和后台任务。
+1411 条 AuditEvent 与 1210 条中立 HarnessOutput 均通过公共模型校验，1210 条输出一一匹配独立审计，
+包括退出阶段的 7 条取消与 5 条用量事件；10 个隔离节点均正常退出，所属进程、容器、网络、卷及端口清空。
+测试前后两仓执行源码指纹一致。真实 MCP 的六个业务检查点全部成功，无反馈重试；
+恢复保留原会话与原生 thread，刷新建立新上下文，后台预览跨空闲及后续对话保持可用，活动回合关闭后回收。
+本轮模型回合未触发的事件分支不据此宣称动态覆盖；独立 provider 的投影修订仍随其自身仓库交付。
+依据本线程 04065bda-7147-5f01-8dbc-3936939bc4b7，测试观测沿自制插件订阅 Audit，不向生产接口添加测试注入或开关。
+
+依据本线程 4eaf7ab2-6f47-5757-b739-30355134e51a 的同分支修复指令，继续对照 0.2
+`core/channel.py` 的绑定／DM／重复身份登记、`app/agent.py::_backfill_channel_identity`，以及
+Telegram／Lark／WeCom 实际 receive、dm_address、typing、send 与审批调用。
+
+- [x] 恢复 Agent 边界的两类本地 ID 转换、按配置顺序的启动身份回填和重复 bot 拒绝；在真实配置启用、消息持久化、主动 DM 与退出中验证。
+- [x] 保留回合事件的原消息锚点，核对 Lark reaction typing、Telegram chat typing 和 WeCom topic／DM 的公共数据需求。
+- [x] 对照原生收发到订阅及关闭链路，补齐映射之前的源事件审计，保留中立输出审计；以真实 provider 验证源顺序、关联、收发和退出事件。
+- [x] 将 SQLite 默认退出预算恢复为 0.2 的 5 秒；物理压缩及 WAL 收尾留在 SQLite 内部，验证真实旧库回收、重启及发行版本升级。
+
+前述 1210 条输出与审计配对只证明已映射输出的覆盖；完整源事件覆盖由本次新增验收分别给出证据。
+
+依据本线程 a78ad9ac-5199-5373-9b39-bfceeaaa8b89，撤销错误加入的公共 `Database.compact`／`checkpoint`、
+`Migration.compact`、`Progress.compaction` 与 Schema 压缩账本。压缩是 SQLite 实现细节，
+SQLite 在删除表、索引或列的事务提交后回收空闲页并收尾 WAL，打开数据库时继续回收遗留空闲页。
+公共业务迁移只提交表与数据变更；原 v9 的 nullable 加列仍按原历史保留，旧迁移记录保持原值。
+SQLite 不识别 Node 的表名和历史迁移版本，也不需要业务迁移声明 SQLite 维护操作。
+原先 32 种历史数据库样本来自只读迁移脚本构造，不能替代真实发行版本的升级验收；补充隔离的 0.1→0.2→0.3 验证。
+删除公共压缩语义后，SQLite／Schema／历史升级 47 项通过（10.72 秒），包含真实 4 MiB 数据回收、
+迁移完成前的文件缩小及重启后业务数据保留；根目录规定的 Pyright LSP 检查通过。
+
+真实发行升级验收覆盖 PyPI 可取得的全部 37 个 0.1 版本（0.1.3…0.1.39）及四个 0.2 版本（0.2.0…0.2.3）。
+41 个原始 wheel 均核对公开 SHA256，在隔离环境使用原发行包创建、填充及重开数据库，未修改迁移链或历史账本。
+每个数据库分别直接升级到当前 0.3 wheel，或先由实际 0.2.3 wheel 升级再进入 0.3；两条路径各启动插件组合两次，
+九类业务表的数据与实际 0.2.3 升级结果一致，消息服务可读取正文、回复关系及附件，原历史记录逐字段保留。
+0.1.3 的实际数据库从 4,390,912 字节回收到 176,128 字节；41 条发行链的迁移前缀与只读 0.2 对照的 32 版迁移一致。
+用于验收的 26 个当前 wheel 共 217 个源码／资源文件逐字节匹配工作区；Agent wheel／sdist 独立安装验收通过（265.08 秒）。
+初次临时验收脚本的旧版 Agent 事务绑定、已移除消息类型及新建会话审核状态问题已修正，失败原件保留；未改变生产代码来适配验收。
+主仓业务终态 a4f85fe 的 11 项 PR CI 全部通过；这些发行升级结果与前述 32 种构造历史样本分开记录。
+
+依据本线程 5fccd653-450d-5f83-a943-e2f8c8c3ac88 与 a63cb652-a2c0-5065-b1bc-52414c0fee23 的聚合接口 review，
+撤销额外提取的发送 Protocol，单个渠道与 `Channels` 聚合均满足完整 `Channel`；消息发送、审批及事件消费者统一使用该协议。
+历史会话回填携带已选中的 `channel`／`channel_identity`，由聚合选择底层 Channel 并委托转换；按原配置顺序回填后再恢复和接收入站。
+公共 `ChannelSender` 的执行、重试与回执逻辑保持原样。修订后 Ruff、根目录 Pyright LSP 及 provider 联合源码 LSP 通过，
+真实独立 wheel／sdist 安装验收通过（272.22 秒），涵盖多渠道路由、审批、分段重试及旧会话身份回填后继续处理原消息。
+本轮 26 个 wheel 的 217 个源码／资源文件再次逐字节匹配工作区；修订及本记录 amend 回原所属提交。
+
+公共 `HarnessSourceEvent` 保存每个原生连接的来源标识、收发顺序、原始 JSON 行及源端墙钟／单调时间。
+Codex 的运行 provider 明确接受 AUDIT，在原生读写处直接发布 `harness.source.sent`／`received`，
+先记录源消息再进行请求分发、去重、关闭筛选及中立投影；原生进程结束后发布来源关闭及最终序号。
+请求／响应和原生 turn 与宿主 turn 的关联随来源保存；审计订阅异常继续沿 NodeAudit 既有处理。
+Agent 继续拥有自己的执行事件和中立输出审计，完整源事件与 Channel 展示独立。
+
+4cb73b1 阶段的真实 SQLite／schema／32 版历史升级验证共 49 项通过，独立 Agent 与历史迁移 wheel／sdist 安装验证通过。
+实际安装包已验证重复 bot 配置拒绝、修正后同库正常工作及旧身份回填恢复；Ruff 与双方源码 LSP 通过。
+补充修复的八场真实 Codex／TestChannel 验收全部通过（2580.475 秒）。独立订阅保存 3227 条 AuditEvent，
+1806 条原生协议消息在 12 个来源内序号连续并各有关闭记录；1211 条中立输出分别匹配唯一审计，
+带原生诊断的投影均可在完整源记录中找到。10 个节点正常退出，自有进程、容器、网络、卷和端口清空，未发生 OOM。
+业务驱动与资源采样入口返回 0；外层临时脚本误留“必须命中旧缓存”的断言，在实际前缀从 13981 变为
+13972 token、正常冷预热后返回 1，原始失败记录保留，不与业务／审计独立验收混淆。
+运行期间按插件状态讨论删除了四个文件中的未使用 health 属性及聚合，除此之外记录的执行源码保持一致；
+这四处前后指纹单独核对，不能将本轮表述为全源码前后未变。最终 Ruff 及两仓源码 LSP 通过，
+主仓业务提交 4cb73b1 的 11 项 CI 全部通过。未触发的事件分支及外部 Channel API 不据此宣称动态覆盖。
+依据 fb31d1a9-4a45-5314-aff6-5bed82d8ec7d／1599640e-d0e5-5f76-8018-83c3f3c52900 的插件状态调用意见，
+本次撤回未提交的强制 Channel.health 及 Agent 旧式聚合，沿已有服务／事件／sidecar 获取 provider 自有状态。
 
 ### Task 12.1：为 agent 注入 developer instruction 与 bcc
 

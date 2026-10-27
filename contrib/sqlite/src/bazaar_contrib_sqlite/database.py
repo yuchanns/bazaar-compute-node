@@ -34,7 +34,7 @@ class SqliteConfig(BaseModel):
     max_idle_readers: int = Field(default=2, gt=0)
     max_readers: int | None = Field(default=None, gt=0)
     reader_idle_timeout: float = Field(default=60, gt=0, allow_inf_nan=False)
-    shutdown_timeout: float = Field(default=20, gt=0, allow_inf_nan=False)
+    shutdown_timeout: float = Field(default=5, gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def pool_size(self) -> Self:
@@ -88,6 +88,7 @@ class Session:
         self._executor = executor
         self._templates = templates
         self._state = _State.OPEN
+        self._reclaim = False
 
     def _require_open(self) -> None:
         if self._state is _State.CLOSED:
@@ -147,6 +148,12 @@ class Session:
         self, operations: tuple[storage.SchemaOperation, ...]
     ) -> None:
         self._require_open()
+        self._reclaim |= any(
+            isinstance(
+                operation, (storage.DropTable, storage.DropIndex, storage.DropColumn)
+            )
+            for operation in operations
+        )
         with storage_errors():
             for operation in operations:
                 if (
@@ -195,6 +202,15 @@ class Session:
                     await self._executor.execute(statement)
 
 
+async def _reclaim(session: SqliteSession) -> None:
+    row = await session.fetchone("PRAGMA freelist_count")
+    if row is not None and row[0]:
+        await session.execute("VACUUM")
+    row = await session.fetchone("PRAGMA wal_checkpoint(TRUNCATE)")
+    if row is None or row[0] != 0:
+        raise storage.MigrationError("SQLite WAL checkpoint could not complete")
+
+
 class SqliteDatabase(Session):
     def __init__(self, executor: SqliteExecutor, templates: Environment) -> None:
         super().__init__(executor, templates)
@@ -225,17 +241,22 @@ class SqliteDatabase(Session):
         *,
         transactional: bool = False,
     ) -> T:
-        async def apply(session: SqliteSession) -> T:
+        async def apply(session: SqliteSession) -> tuple[T, bool]:
             bound = Session(session, self._templates)
             try:
-                return await operation(bound)
+                result = await operation(bound)
+                return result, bound._reclaim
             finally:
                 bound._state = _State.CLOSED
 
         with storage_errors():
             if transactional:
-                return await self._writer.transaction_write(apply)
-            return await self._writer.write(apply)
+                result, reclaim = await self._writer.transaction_write(apply)
+            else:
+                result, reclaim = await self._writer.write(apply)
+            if reclaim:
+                await self._writer.write(_reclaim)
+            return result
 
     async def transaction[T](
         self, operation: Callable[[storage.Session], Awaitable[T]]
@@ -293,6 +314,7 @@ async def open_database(
     readers: list[aiosqlite.Connection] = []
     try:
         with storage_errors():
+            await _reclaim(SqliteSession(writer))
             if os.name != "nt":
                 await asyncio.to_thread(path.chmod, 0o600)
             for _ in range(config.max_idle_readers):

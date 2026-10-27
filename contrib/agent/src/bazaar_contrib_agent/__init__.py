@@ -161,10 +161,22 @@ async def channel_lifespan(ctx: Context, config: _ChannelConfig):
             config.provider,
             loop.channels.order[ctx.name],
         )
+        identity = connection.channel.get_identity()
+        for member in loop.channels.connections.values():
+            if (
+                member.state is not states.ConnectionState.STOPPED
+                and member.kind == connection.kind
+                and member.channel.get_identity().id == identity.id
+            ):
+                error = ValueError(
+                    f"channel {connection.kind} identity {identity.id} is configured "
+                    f"twice ({member.name} and {connection.name})"
+                )
+                loop.failure.fail(error)
+                raise error
         loop.channels.connections[connection.name] = connection
         task = group.create_task(loop.receive(connection))
         try:
-            await loop.recover()
             yield
         finally:
             task.cancel()
@@ -219,7 +231,6 @@ async def harness_lifespan(ctx: Context, config: _HarnessConfig):
         loop.tasks.add(task)
         task.add_done_callback(loop.tasks.discard)
         try:
-            await loop.recover()
             yield
         finally:
             runtime.state = states.Lifecycle.STOPPING

@@ -71,6 +71,7 @@ from bazaar_contrib_harness import (
     ProviderCallResult,
     ProviderCallStatus,
     SessionInput,
+    TurnFailed,
     harness_builder_key,
 )
 from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribSpec, load
@@ -204,10 +205,15 @@ class TestChannel:
     def get_identity(self) -> ChannelIdentity:
         return ChannelIdentity(id=self.input.agent_id, name=self.input.agent_name)
 
+    def backfill_provider_thread_id(
+        self, provider_thread_id: str, *, channel: str, channel_identity: str
+    ) -> str:
+        return provider_thread_id
+
     def dm_address(self, request: DmRequest) -> DmAddress | None:
         if request.sender_id is None:
             return None
-        identity = f"{self.kind}:{self.input.agent_id}:dm:{request.sender_id}"
+        identity = f"{self.kind}:dm:{request.sender_id}"
         return DmAddress(
             channel_session_id=str(uuid5(NAMESPACE_URL, identity + ":channel")),
             thread_id=str(uuid5(NAMESPACE_URL, identity + ":thread")),
@@ -228,7 +234,9 @@ class TestChannel:
                 packet = json.loads(data)
                 if "inbound" in packet:
                     message = ChannelMessage.model_validate(packet["inbound"])
-                    identity = f"{self.kind}:{self.input.agent_id}:{message.target.kind}:{message.target.thread_id}"
+                    identity = (
+                        f"{self.kind}:{message.target.kind}:{message.target.thread_id}"
+                    )
                     await self.inbound.put(
                         InboundMessage(
                             **message.model_dump(exclude={"id", "attachments"}),
@@ -511,7 +519,9 @@ class DocumentStream:
                             event
                             | {
                                 "provider": "document",
-                                "provider_event": event["kind"],
+                                "provider_event": event["payload"].get(
+                                    "event_name", event["payload"]["type"]
+                                ),
                                 "raw": event,
                             }
                         )
@@ -532,11 +542,13 @@ class DocumentStream:
                     HarnessOutput(
                         session_id=self.turn.session_id,
                         turn_id=self.turn.id,
-                        kind="failed",
-                        failure=HarnessFailure(
-                            HarnessFailureReason.EXECUTION,
-                            (await self.stderr.read()).decode(),
-                            code=self.process.returncode,
+                        payload=TurnFailed(
+                            event_name="document.turn.failed",
+                            failure=HarnessFailure(
+                                HarnessFailureReason.EXECUTION,
+                                (await self.stderr.read()).decode(),
+                                code=self.process.returncode,
+                            ),
                         ),
                         provider="document",
                     )

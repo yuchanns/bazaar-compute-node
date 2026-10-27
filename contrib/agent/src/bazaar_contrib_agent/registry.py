@@ -126,6 +126,32 @@ class AgentInstances:
                 while runtime.pending:
                     await loop.timer.create(max(100, loop.timer.tick_ms)).wait()
         await self.enabled.update(Composition(entries=entries))
+        for item in config.agents:
+            identity = self.running.get(item.id)
+            if identity is None or identity._loop is None:
+                continue
+            loop = identity._loop
+            for connection in sorted(
+                loop.channels.connections.values(), key=lambda item: item.priority
+            ):
+                channel_identity = connection.channel.get_identity().id
+                for (
+                    session
+                ) in await loop.service.storage.list_channel_sessions_without_identity(
+                    connection.kind
+                ):
+                    await loop.service.storage.backfill_channel_identity(
+                        session.id,
+                        channel_identity=channel_identity,
+                        provider_thread_id=loop.channels.backfill_provider_thread_id(
+                            session.provider_thread_id,
+                            channel=connection.kind,
+                            channel_identity=channel_identity,
+                        ),
+                    )
+            for connection in loop.channels.connections.values():
+                connection.ready.set()
+            await loop.recover()
         self.config = config
         self.name = ctx.name
 

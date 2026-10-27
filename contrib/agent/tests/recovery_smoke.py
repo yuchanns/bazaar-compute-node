@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from uuid import uuid7
 
+import aiosqlite
 from bazaar_contrib_channel import ChannelTarget, SenderIdentity
 from bcn_agent_workbench import ChannelMessage as InboundMessage
 from provider_smoke import Peer, finish
@@ -100,6 +101,17 @@ async def exercise(path: Path):
         assert json.loads(await process.stdout.readline())["persisted"]
     finally:
         await stop(process, peer)
+    async with aiosqlite.connect(path / "messages.sqlite3") as connection:
+        async with connection.execute(
+            "SELECT id, provider_thread_id FROM channel_sessions WHERE agent_id = ?",
+            (agent["id"],),
+        ) as cursor:
+            conversations = await cursor.fetchall()
+        await connection.execute(
+            "UPDATE channel_sessions SET channel_identity = NULL WHERE agent_id = ?",
+            (agent["id"],),
+        )
+        await connection.commit()
     agent["harness"] = [{"kind": "document"}]
     process, peer = await start()
     try:
@@ -109,4 +121,15 @@ async def exercise(path: Path):
         assert message.body in data["inbox"] and data["words"] > 0
     finally:
         await stop(process, peer)
+    async with aiosqlite.connect(path / "messages.sqlite3") as connection:
+        async with connection.execute(
+            "SELECT id, provider_thread_id FROM channel_sessions WHERE agent_id = ?",
+            (agent["id"],),
+        ) as cursor:
+            assert await cursor.fetchall() == conversations
+        async with connection.execute(
+            "SELECT channel_identity FROM channel_sessions WHERE agent_id = ?",
+            (agent["id"],),
+        ) as cursor:
+            assert all(row[0] for row in await cursor.fetchall())
     assert await asyncio.to_thread((saved.parent / "session.closed").read_text)

@@ -308,7 +308,10 @@ class Schema:
                         f"{package} requires registered schema {dependency.package} >= {dependency.version}"
                     )
 
+            version = 0
+
             async def apply(session: Session) -> None:
+                nonlocal version
                 version = await self._version(session, package, module.progress)
                 if version > module.version:
                     raise MigrationError(
@@ -406,6 +409,7 @@ class Schema:
                         migration.name,
                         (monotonic_ns() - started) // 1_000_000,
                     )
+                    version = migration.version
 
             await self._database.transaction(apply)
             self._modules[package] = module

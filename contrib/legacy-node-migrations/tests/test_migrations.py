@@ -9,10 +9,24 @@ lazy from pathlib import Path
 import pytest
 from bazaar_contrib_schema import SCHEMA, Schema
 from bazaar_contrib_sqlite import SqliteConfig, open_database
-from bazaar_contrib_storage import Select
+from bazaar_contrib_storage import Column, Select
 from bazaar_contrib_timer import Timer
 
 from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
+
+_HISTORY = Select(
+    table="schema_migrations",
+    columns={
+        name: Column(name=name)
+        for name in (
+            "version",
+            "migration_name",
+            "checksum",
+            "applied_at_ms",
+            "duration_ms",
+        )
+    },
+)
 
 
 @pytest.fixture
@@ -107,7 +121,7 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
         open_database(SqliteConfig(path=path), timer=timer) as database,
         open_database(SqliteConfig(path=expected), timer=timer) as reference,
     ):
-        original = await database.select(Select(table="schema_migrations"))
+        original = await database.select(_HISTORY)
         schema = Schema(database)
         await schema.start()
         async with registered(schema, modules):
@@ -120,7 +134,49 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
                     assert sorted(map(repr, rows)) == sorted(
                         map(repr, expected_rows)
                     ), table
-        assert await database.select(Select(table="schema_migrations")) == original
+        history = await database.select(_HISTORY)
+        assert history == original
+
+
+async def test_removed_event_storage_is_reclaimed_and_data_survives_restart(
+    tmp_path: Path, modules, timer: Timer
+):
+    from bazaar_contrib_storage import Insert
+
+    root = (await asyncio.to_thread(Path(__file__).resolve)).parents[3]
+    path = tmp_path / "events.sqlite3"
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(root / "contrib/legacy-node-migrations/tests/fixtures/history.py"),
+        str(root / "src"),
+        "8",
+        str(path),
+        str(tmp_path / "expected.sqlite3"),
+    )
+    assert await process.wait() == 0
+    async with open_database(SqliteConfig(path=path), timer=timer) as database:
+        await database.insert(
+            Insert(
+                table="runtime_events",
+                rows=tuple({"metadata_json": "x" * 65536} for _ in range(64)),
+            )
+        )
+    size = (await asyncio.to_thread(path.stat)).st_size
+    async with open_database(SqliteConfig(path=path), timer=timer) as database:
+        schema = Schema(database)
+        await schema.start()
+        async with registered(schema, modules):
+            messages = await database.select(Select(table="messages"))
+            history = await database.select(_HISTORY)
+            assert messages
+            assert (await asyncio.to_thread(path.stat)).st_size < size
+    assert (await asyncio.to_thread(path.stat)).st_size < size
+    async with open_database(SqliteConfig(path=path), timer=timer) as database:
+        schema = Schema(database)
+        await schema.start()
+        async with registered(schema, modules):
+            assert await database.select(_HISTORY) == history
+            assert await database.select(Select(table="messages")) == messages
 
 
 async def test_new_database_uses_current_baseline_and_retains_new_data(
@@ -250,7 +306,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
     }
     async with open_database(SqliteConfig(path=path), timer=timer) as database:
         previous = await database.select(Select(table="contrib_schema_migrations"))
-        original = await database.select(Select(table="schema_migrations"))
+        original = await database.select(_HISTORY)
         messages = await database.select(Select(table="messages"))
         settings = await database.select(Select(table="settings"))
         schema = Schema(database)
@@ -273,9 +329,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
                 assert reminders[0]["priority"] == 5
                 assert await database.select(Select(table="messages")) == messages
                 assert await database.select(Select(table="settings")) == settings
-                assert (
-                    await database.select(Select(table="schema_migrations")) == original
-                )
+                assert await database.select(_HISTORY) == original
                 assert (
                     await database.select(Select(table="contrib_schema_migrations"))
                     == history
@@ -307,7 +361,7 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
         open_database(SqliteConfig(path=expected), timer=timer) as reference,
     ):
         previous = await database.select(Select(table="contrib_schema_migrations"))
-        original = await database.select(Select(table="schema_migrations"))
+        original = await database.select(_HISTORY)
         for run in range(2):
             schema = Schema(database)
             await schema.start()
@@ -321,9 +375,7 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
                     and row["version"] == 32
                     for row in history
                 )
-                assert (
-                    await database.select(Select(table="schema_migrations")) == original
-                )
+                assert await database.select(_HISTORY) == original
                 if run == 0:
                     for module in modules.values():
                         for table in module.tables:

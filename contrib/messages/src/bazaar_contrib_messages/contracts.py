@@ -86,6 +86,14 @@ class MessageStorage(MessageSession, Protocol):
     @property
     def owner(self) -> Agent: ...
 
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]: ...
+
+    async def backfill_channel_identity(
+        self, channel_session_id: str, *, channel_identity: str, provider_thread_id: str
+    ) -> None: ...
+
     async def get_consumer_cursor(self, actor: Thread) -> ConsumerCursor | None: ...
 
     async def write[T](self, operation: Callable[[MessageSession], Awaitable[T]]) -> T:

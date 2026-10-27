@@ -18,15 +18,14 @@ def main():
     envelope = {"session_id": turn["session_id"], "turn_id": turn["id"]}
     report = directory / (turn["id"] + ".json")
 
-    def emit(kind, **values):
+    def emit(event_type, **values):
         print(
             json.dumps(
                 {
                     "event": dict(
                         envelope,
-                        kind=kind,
                         occurred_at_ms=time_ns() // 1_000_000,
-                        **values,
+                        payload={"type": event_type, **values},
                     )
                 }
             ),
@@ -34,7 +33,7 @@ def main():
         )
 
     try:
-        emit("started")
+        emit("started", event_name="document.turn.started")
         command = shutil.which("bcc")
         if command is None:
             raise FileNotFoundError("The harness session has no bcc command in PATH")
@@ -92,10 +91,14 @@ def main():
         parts = []
         for path in paths:
             path = str(Path(path).absolute())
-            call = {"id": str(uuid7()), "name": "file.read", "path": path}
-            emit("tool.started", metadata=call)
+            call = {
+                "call_id": str(uuid7()),
+                "name": "file.read",
+                "input": {"path": path},
+            }
+            emit("tool.started", call=call)
             content = Path(path).read_text()
-            emit("tool.completed", metadata=call | {"result": content})
+            emit("tool.completed", call=call | {"input": None, "output": content})
             parts.append(content)
         text = "\n".join(parts) or prompt
         header = re.search(r"\[target=(.*?) msg=([^ ]+)", prompt)
@@ -158,10 +161,18 @@ def main():
                         )
                         + "\n"
                     )
-                emit("inbox.checked", metadata={"messages": update.stdout})
+                emit(
+                    "started",
+                    event_name="document.inbox.checked",
+                    metadata={"messages": update.stdout},
+                )
         if decision["decision"] == "approved":
-            call = {"id": str(uuid7()), "name": "file.write", "path": str(report)}
-            emit("tool.started", metadata=call | {"arguments": data})
+            call = {
+                "call_id": str(uuid7()),
+                "name": "file.write",
+                "input": {"path": str(report), "report": data},
+            }
+            emit("tool.started", call=call)
             data["context"] = {
                 name: os.environ.get(variable)
                 for name, variable in (
@@ -172,15 +183,15 @@ def main():
                 )
             }
             report.write_text(json.dumps(data) + "\n")
-            emit("tool.completed", metadata=call | {"result": data})
+            emit("tool.completed", call=call | {"input": None, "output": data})
             body = (
                 f"Saved {data['words']} words across {data['lines']} lines to {report}."
             )
         else:
             body = "The document report was declined."
         if request["input_mode"] == "batch":
-            emit("text", text=body)
-            emit("completed")
+            emit("content_delta", kind="agent_message", text=body)
+            emit("completed", event_name="document.turn.completed")
             return
         checked = subprocess.run(
             [command, "message", "check"],
@@ -218,8 +229,8 @@ def main():
                 check=True,
                 encoding="utf-8",
             )
-        emit("text", text=body)
-        emit("completed")
+        emit("content_delta", kind="agent_message", text=body)
+        emit("completed", event_name="document.turn.completed")
     except subprocess.CalledProcessError as error:
         print(error.stdout or "", file=sys.stderr)
         print(error.stderr or "", file=sys.stderr)
