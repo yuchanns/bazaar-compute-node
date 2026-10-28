@@ -18,6 +18,7 @@ from bazaar_contrib_messages import (
 )
 from bazaar_contrib_messages.operations import UnreadMessageOwner
 from bazaar_contrib_schema import SCHEMA
+from bazaar_contrib_sidecar import RemoteEntry
 from bazaar_contrib_storage import DB, Database, Session
 from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import Context, Contrib
@@ -42,6 +43,7 @@ __all__ = [
     "NodeMessages",
     "ThreadLockRegistry",
     "messages",
+    "remote",
 ]
 
 
@@ -137,3 +139,5 @@ messages = Contrib(
     offers=[MESSAGES],
     lifespan=lifespan,
 )
+
+remote = RemoteEntry(MESSAGES, ("request",))

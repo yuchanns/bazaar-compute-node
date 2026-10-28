@@ -43,6 +43,10 @@ from .states import MessageDirection, Review
 SessionBindingValidator = Callable[[Actor, Mapping[str, object]], Awaitable[None]]
 
 
+class SessionBindingError(ValueError):
+    """A command does not carry its runtime session's binding."""
+
+
 class MessageSession(Protocol):
     """Conversation operations valid within their provider's database scope."""
 

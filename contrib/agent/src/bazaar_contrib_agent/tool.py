@@ -16,8 +16,7 @@ from bazaar_contrib_config import (
     ConfigurationEnvironment,
     configuration,
 )
-from bazaar_contrib_sidecar import CLIENT, Client, Remote, Symbol
-from bazaar_contrib_sidecar.wire import Request, encode
+from bazaar_contrib_sidecar import CLIENT, Client
 from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribSpec, load
 from pydantic import BaseModel, ConfigDict
 
@@ -107,25 +106,8 @@ async def request(
         ),
     ) as hub:
         Configuration.check(hub)
-        client = clients[0]
-        remote = cast(
-            Remote,
-            await client.request(
-                Request(
-                    operation="call",
-                    method="accept",
-                    args=(encode(Symbol(service), client.reference),),
-                ),
-                timeout=None,
-            ),
-        )
         # The dispatcher owns this command's wait budget.
-        return await client.request(
-            Request(
-                operation="call",
-                target=remote.id,
-                method="request",
-                args=(encode(dict(payload), client.reference),),
-            ),
-            timeout=None,
+        return cast(
+            Mapping[str, object],
+            await clients[0].call(service, "request", dict(payload), timeout=None),
         )

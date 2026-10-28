@@ -9,7 +9,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Literal
 
 import click
-from bazaar_contrib_sidecar import Client, Construct, Symbol
+from bazaar_contrib_sidecar import Client
 from jinja2 import Environment, PackageLoader, StrictUndefined
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
@@ -260,53 +260,9 @@ def create_commands(service: AgentManagement, client: Client) -> click.Group:
     async def contact_review(
         agent_id: str | None, decision: str | None, thread_id: str | None = None
     ):
-        collaboration = await client.context.call(
-            "accept", Symbol("bazaar_contrib_collaboration:COLLABORATION")
-        )
-        if decision is not None:
-            snapshot = await service.read()
-            messages = await client.context.call(
-                "accept", Symbol("bazaar_contrib_messages:MESSAGES")
-            )
-            thread = Construct("bazaar_contrib_messages:Thread", {"id": thread_id})
-            for agent in snapshot.agents:
-                storage = await messages.call(
-                    "storage",
-                    Construct("bazaar_contrib_messages:Agent", {"id": agent.id}),
-                )
-                if await storage.call("get_thread", thread) is not None:
-                    agent_id = agent.id
-                    break
-            else:
-                raise ValueError(f"conversation not found: {thread_id}")
-        owner = Construct("bazaar_contrib_messages:Agent", {"id": agent_id})
-        contacts = await collaboration.call("for_agent", owner)
         if decision is None:
-            messages = await contacts.get("messages")
-            inbox = await messages.call(
-                "check_inbox",
-                owner,
-                pending_only=False,
-                limit=None,
-                review=Construct(
-                    "bazaar_contrib_messages.states:Review", {"value": "pending"}
-                ),
-            )
-            rows = []
-            for target in await inbox.get("targets"):
-                rows.append(
-                    {
-                        key: await target.get(key)
-                        for key in ("thread_id", "channel", "target", "review")
-                    }
-                )
-            return rows
-        session = await contacts.call(
-            "review_contact",
-            Construct("bazaar_contrib_messages:Thread", {"id": thread_id}),
-            Construct("bazaar_contrib_messages.states:Review", {"value": decision}),
-        )
-        return await session.get("review")
+            return await client.call("collaboration", "pending_contacts", agent_id)
+        return await client.call("collaboration", "review_contact", thread_id, decision)
 
     @review.command("list", help="List pending conversations")
     @click.argument("agent_id")

@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 
 import tomli_w
 from bazaar_contrib_sidecar.streams import Call, Reply, UnlimitedLineReader
-from bazaar_contrib_sidecar.wire import Atom, Request, Result
+from bazaar_contrib_sidecar.wire import Request, Result
 from installed_smoke import command, node
 
 if sys.platform == "win32":
@@ -107,7 +107,7 @@ async def exercise(directory: Path):
         reader, writer = await connect(endpoint)
         try:
             requests = [
-                Call(request=Request(operation="get", method="name"))
+                Call(request=Request(service="journal", method="tag"))
                 .model_dump_json()
                 .encode()
                 for _ in range(2)
@@ -119,8 +119,7 @@ async def exercise(directory: Path):
             lines = UnlimitedLineReader(reader)
             for _ in range(2):
                 response = Reply.model_validate_json(await lines.readline()).response
-                assert isinstance(response, Result) and isinstance(response.value, Atom)
-                assert "sidecar" in str(response.value.value)
+                assert isinstance(response, Result) and response.value == "journal"
         finally:
             writer.close()
             await writer.wait_closed()

@@ -55,7 +55,7 @@ class ReminderClient:
             ),
             **payload,
         }
-        response = await self.send("bazaar_contrib_reminder:REMINDER", request)
+        response = await self.send("reminder", request)
         if response.get("ok") is not True:
             raise BccCommandError(
                 str(response.get("error", "command failed")),

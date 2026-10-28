@@ -11,12 +11,11 @@ from contextlib import asynccontextmanager, closing
 from importlib.metadata import distribution
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from time import time_ns
-from typing import Any
+from typing import Any, cast
 from uuid import uuid7
 
 import tomli_w
-from bazaar_contrib_sidecar import CLIENT, Client, Construct, Remote, Symbol
+from bazaar_contrib_sidecar import CLIENT, Client
 from bazaar_core import Context, Contrib, ContribEntry, ContribHub, ContribSpec, load
 
 
@@ -148,35 +147,58 @@ async def events(directory: Path, name: str, *, count: int = 1) -> list[dict[str
         await asyncio.sleep(0.01)
 
 
-def agent(id: str) -> Construct:
-    return Construct("bazaar_contrib_messages:Agent", {"id": id})
-
-
-def thread(id: str) -> Construct:
-    return Construct("bazaar_contrib_messages:Thread", {"id": id})
-
-
-def review(value: str) -> Construct:
-    return Construct("bazaar_contrib_messages.states:Review", {"value": value})
-
-
 async def contacts(
-    service: Remote, owner: str, state: str | None = None
+    directory: Path, owner: str, state: str | None = None
 ) -> list[dict[str, Any]]:
-    messages = await service.get("messages")
-    result = await messages.call(
-        "check_inbox",
-        agent(owner),
-        pending_only=False,
-        review=review(state) if state else None,
+    sessions = {
+        session["id"]: session
+        for session in await asyncio.to_thread(rows, directory, "channel_sessions")
+        if session["agent_id"] == owner
+    }
+    messages = await asyncio.to_thread(rows, directory, "messages")
+    found = []
+    for thread in await asyncio.to_thread(rows, directory, "threads"):
+        session = sessions.get(thread["channel_session_id"])
+        if session is None or (state is not None and session["review"] != state):
+            continue
+        latest = max(
+            (message for message in messages if message["thread_id"] == thread["id"]),
+            key=lambda message: message["seq"],
+        )
+        found.append(
+            {
+                "thread_id": thread["id"],
+                "canonical_target": latest["target"],
+                "review": session["review"],
+                "latest_message_id": latest["message_id"],
+                "seq": latest["seq"],
+            }
+        )
+    return sorted(found, key=lambda contact: contact["seq"], reverse=True)
+
+
+async def command(client: Client, command: str, **values: object) -> dict[str, Any]:
+    response = cast(
+        dict[str, Any],
+        await client.call(
+            "messages",
+            "request",
+            {
+                "kind": "command",
+                "agent_id": "Cloud",
+                "actor_id": "Cloud",
+                "resource": "message",
+                "command": command,
+                **values,
+            },
+        ),
     )
-    return [
-        {
-            name: await target.get(name)
-            for name in ("thread_id", "canonical_target", "review", "latest_message_id")
-        }
-        for target in await result.get("targets")
-    ]
+    assert response["ok"], response
+    return response["result"]
+
+
+async def review(client: Client, thread_id: str, decision: str) -> None:
+    await client.call("collaboration", "review_contact", thread_id, decision)
 
 
 async def exercise(directory: Path):
@@ -248,19 +270,9 @@ async def exercise(directory: Path):
             }
         )
         async with ContribHub() as hub, hub.enable(composition):
-            collaboration: Remote = await clients[0].context.call(
-                "accept", Symbol("bazaar_contrib_collaboration:COLLABORATION")
-            )
-            messages: Remote = await clients[0].context.call(
-                "accept", Symbol("bazaar_contrib_messages:MESSAGES")
-            )
-            services = {
-                owner: await collaboration.call("for_agent", agent(owner))
-                for owner in ("Cloud", "Tifa")
-            }
             peers: dict[str, Peer] = {}
             try:
-                for owner in services:
+                for owner in ("Cloud", "Tifa"):
                     address = json.loads(
                         await asyncio.to_thread(
                             (directory / owner / "channel.json").read_text
@@ -269,16 +281,20 @@ async def exercise(directory: Path):
                     peers[owner] = Peer(
                         *await asyncio.open_connection("127.0.0.1", address["port"])
                     )
-                yield services, messages, peers
+                yield clients[0], peers
             finally:
                 for peer in peers.values():
                     await peer.aclose()
 
-    async with node(config), control() as (services, messages, peers):
-        cloud, tifa = services["Cloud"], services["Tifa"]
-        await cloud.call("set_setting", "review.reply", "消息已收到，审核通过后继续。")
-        await cloud.call("set_setting", "review.reply", "已收到申请，审核通过后继续。")
-        await tifa.call("set_setting", "review.reply", "请稍候，我们会尽快审核。")
+    async with node(config), control() as (client, peers):
+        for owner, reply in (
+            ("Cloud", "消息已收到，审核通过后继续。"),
+            ("Cloud", "已收到申请，审核通过后继续。"),
+            ("Tifa", "请稍候，我们会尽快审核。"),
+        ):
+            await client.call(
+                "collaboration", "set_setting", owner, "review.reply", reply
+            )
         pending = await peers["Cloud"].inbound("你好，我想请你一起整理下周的活动材料。")
         pending_row = await received(directory, pending)
         assert not pending_row["notifies_runtime"]
@@ -288,7 +304,7 @@ async def exercise(directory: Path):
             "已收到申请" in delivery["outbound"]["body"]
             for delivery in peers["Cloud"].deliveries
         )
-        pending_contacts = await contacts(cloud, "Cloud", "pending")
+        pending_contacts = await contacts(directory, "Cloud", "pending")
         owned = next(
             contact
             for contact in pending_contacts
@@ -298,9 +314,7 @@ async def exercise(directory: Path):
         other_row = await received(directory, other)
         assert not other_row["notifies_runtime"]
         assert other_row["thread_id"] != pending_row["thread_id"]
-        await tifa.call(
-            "review_contact", thread(other_row["thread_id"]), review("approved")
-        )
+        await review(client, other_row["thread_id"], "approved")
         other = await peers["Tifa"].inbound("上周会议主要讨论了场地和报名安排。")
         assert (await received(directory, other))["notifies_runtime"]
         group_request = await peers["Cloud"].inbound(
@@ -308,9 +322,7 @@ async def exercise(directory: Path):
         )
         group_row = await received(directory, group_request)
         assert not group_row["notifies_runtime"]
-        await cloud.call(
-            "review_contact", thread(group_row["thread_id"]), review("approved")
-        )
+        await review(client, group_row["thread_id"], "approved")
         allowed = await peers["Cloud"].inbound(
             "@Cloud 可以先看看讲师的时间安排。", target="team", kind="group"
         )
@@ -321,55 +333,45 @@ async def exercise(directory: Path):
             metadata={"review": "approved"},
         )
         assert (await received(directory, trusted))["notifies_runtime"]
-        await cloud.call(
-            "review_contact", thread(owned["thread_id"]), review("approved")
-        )
+        await review(client, owned["thread_id"], "approved")
         followup = await peers["Cloud"].inbound(
             "报名表里还需要补上讲师介绍。", reply_to=pending
         )
         row = await received(directory, followup)
         assert row["notifies_runtime"] and row["reply_to_message_id"] == pending
         assert row["thread_id"] == owned["thread_id"]
-        stored = await cloud.get("messages")
-        storage = await stored.get("storage")
-        known = await storage.call("find_known_sender", "HANCHIN")
-        assert await (await known.get("sender")).get("id") == "hanchin"
-        assert await known.get("channel_identity") == "Cloud"
-        await messages.call(
-            "request",
-            {
-                "kind": "command",
-                "agent_id": "Cloud",
-                "actor_id": "Cloud",
-                "resource": "message",
-                "command": "check",
-            },
-        )
-        sent = await stored.call(
-            "send_message",
-            actor=agent("Cloud"),
-            raw_target=owned["canonical_target"],
+        await command(client, "check")
+        await command(
+            client,
+            "send",
+            target=owned["canonical_target"],
             body="报名表已补好，我会继续整理讲师介绍。",
-            created_at_ms=time_ns() // 1_000_000,
             reply_to_message_id=followup,
         )
-        sent = await sent.get("message")
-        sent = await sent.get("message_id")
+        sent = max(
+            (
+                message
+                for message in await asyncio.to_thread(rows, directory, "messages")
+                if message["direction"] == "outbound"
+            ),
+            key=lambda message: message["seq"],
+        )["message_id"]
         outbound = peers["Cloud"].deliveries[-1]
         quote = await peers["Cloud"].inbound(
             "收到，这版可以发给会务同事了。", reply_to=outbound["id"]
         )
         quoted = await received(directory, quote)
         assert quoted["reply_to_message_id"] == sent
-        history = await stored.call(
-            "read_messages",
-            thread(owned["thread_id"]),
-            raw_target=owned["canonical_target"],
+        history = await command(
+            client,
+            "read",
+            target=owned["canonical_target"],
             around_message_id=quote,
             limit=1,
         )
-        references = await history.get("referenced_messages")
-        assert any([await message.get("message_id") == sent for message in references])
+        assert any(
+            message["message_id"] == sent for message in history["referenced_messages"]
+        )
         await peers["Cloud"].inbound(
             outbound["outbound"]["body"], id=outbound["id"], notifies_runtime=False
         )
@@ -392,24 +394,22 @@ async def exercise(directory: Path):
             )
             == 1
         )
-        await cloud.call("review_contact", thread(owned["thread_id"]), review("denied"))
+        await review(client, owned["thread_id"], "denied")
         peers["Cloud"].status = "failed"
         returned = await peers["Cloud"].inbound("我补齐了活动背景，能再看一下吗？")
         assert not (await received(directory, returned))["notifies_runtime"]
         replies = await events(directory, "channel.review.replied", count=4)
         assert replies[-1]["payload"]["state"] == "failed"
-        assert (await contacts(cloud, "Cloud", "pending"))[0]["thread_id"] == owned[
+        assert (await contacts(directory, "Cloud", "pending"))[0]["thread_id"] == owned[
             "thread_id"
         ]
-        await cloud.call(
-            "review_contact", thread(owned["thread_id"]), review("approved")
-        )
+        await review(client, owned["thread_id"], "approved")
         group = next(
             contact
-            for contact in await contacts(cloud, "Cloud", "approved")
+            for contact in await contacts(directory, "Cloud", "approved")
             if contact["latest_message_id"] == allowed
         )
-        await cloud.call("review_contact", thread(group["thread_id"]), review("denied"))
+        await review(client, group["thread_id"], "denied")
         settings = await events(directory, "setting.changed", count=3)
         assert all(
             event["payload"]["metadata"] == {"key": "review.reply"}
@@ -432,23 +432,27 @@ async def exercise(directory: Path):
             in notifications
             for event in reviews
         )
-        assert (await contacts(tifa, "Tifa"))[0]["thread_id"] == other_row["thread_id"]
+        assert (await contacts(directory, "Tifa"))[0]["thread_id"] == other_row[
+            "thread_id"
+        ]
 
-    async with node(config), control() as (services, messages, peers):
-        cloud, tifa = services["Cloud"], services["Tifa"]
-        assert "审核通过" in await cloud.call("setting", "review.reply")
-        assert "请稍候" in await tifa.call("setting", "review.reply")
+    async with node(config), control() as (client, peers):
+        for owner, text in (("Cloud", "审核通过"), ("Tifa", "请稍候")):
+            assert text in cast(
+                str,
+                await client.call("collaboration", "setting", owner, "review.reply"),
+            )
         assert any(
             contact["thread_id"] == owned["thread_id"]
-            for contact in await contacts(cloud, "Cloud", "approved")
+            for contact in await contacts(directory, "Cloud", "approved")
         )
         assert any(
             contact["thread_id"] == group["thread_id"]
-            for contact in await contacts(cloud, "Cloud", "denied")
+            for contact in await contacts(directory, "Cloud", "denied")
         )
         assert any(
             contact["thread_id"] == other_row["thread_id"]
-            for contact in await contacts(tifa, "Tifa", "approved")
+            for contact in await contacts(directory, "Tifa", "approved")
         )
         resumed = await peers["Cloud"].inbound(
             "继续之前的活动材料，今天有了新的议程。", reply_to=quote
@@ -461,7 +465,7 @@ async def exercise(directory: Path):
         await events(directory, "channel.review.replied", count=5)
         assert any(
             contact["latest_message_id"] == newcomer
-            for contact in await contacts(tifa, "Tifa", "pending")
+            for contact in await contacts(directory, "Tifa", "pending")
         )
         await peers["Cloud"].inbound(
             "继续之前的活动材料，今天有了新的议程。",

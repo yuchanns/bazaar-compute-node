@@ -1,7 +1,7 @@
 [project]
 name = "bazaar-contrib-sidecar"
 version = "0.3.0rc8"
-description = "Transport-independent sidecar contracts and Context handlers"
+description = "Transport-independent sidecar contracts and exposed service calls"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

@@ -25,18 +25,19 @@ from bazaar_contrib_sidecar import CLIENT
 from bazaar_core import CURRENT_CONTEXT, Contrib, ServiceKey
 from filelock import AsyncFileLock
 lazy from bazaar_contrib_config import (
+    ConfigCandidate,
     ConfigConflict,
     ConfigDependencyError,
     ConfigSnapshot,
     Configuration,
     ConfigurationApplication,
-    ConfigurationEnvironment,
 )
-lazy from bazaar_contrib_sidecar import Client, Construct, Remote, RemoteError, Symbol
+lazy from bazaar_contrib_sidecar import Client, RemoteError
 lazy from bazaar_core import Context, ContribEntry
 lazy from packaging.requirements import Requirement
 lazy from packaging.specifiers import SpecifierSet
 lazy from packaging.utils import canonicalize_name
+lazy from pydantic import TypeAdapter
 
 from .catalog import CONTRIB_CATALOG, ContribCatalog
 from .contracts import (
@@ -85,7 +86,7 @@ class ContribManager:
         self.packages = packages
         self.tasks = tasks
         self.ctx = ctx
-        self.remote: Remote | None = None
+        self.remote: Client | None = None
         self.operations: dict[UUID, Operation] = {}
         self.closed = False
 
@@ -155,28 +156,13 @@ class ContribManager:
                         if clients:
                             client = clients[0]
                             try:
-                                configuration = await client.context.call(
-                                    "accept",
-                                    Symbol("bazaar_contrib_config:CONFIGURATION"),
+                                environment = await client.call(
+                                    "configuration", "environment"
                                 )
                             except FileNotFoundError, ConnectionRefusedError:
                                 await stack.aclose()
                             else:
-                                environment = await configuration.get("environment")
-                                environment = (
-                                    ConfigurationEnvironment.model_validate(
-                                        await environment.call(
-                                            "model_dump", mode="json"
-                                        )
-                                    )
-                                    if environment is not None
-                                    else None
-                                )
-                                if (
-                                    environment.model_dump(mode="json")
-                                    if environment is not None
-                                    else None
-                                ) != (
+                                if environment != (
                                     self.configuration.environment.model_dump(
                                         mode="json"
                                     )
@@ -187,19 +173,21 @@ class ContribManager:
                                         "the sidecar belongs to another configuration; "
                                         "select its configuration or endpoint"
                                     )
-                                _, snapshot = await configuration.call("read")
+                                _, snapshot = TypeAdapter(
+                                    tuple[ConfigCandidate, ConfigSnapshot | None]
+                                ).validate_python(
+                                    await client.call("configuration", "read")
+                                )
                                 current = await self.configuration.store.read()
                                 if (
-                                    await snapshot.get("revision")
-                                    if snapshot is not None
-                                    else None
+                                    snapshot.revision if snapshot is not None else None
                                 ) != (
                                     current.revision if current is not None else None
                                 ):
                                     raise ConfigConflict(
                                         "the sidecar configuration differs from the selected source"
                                     )
-                                self.remote = configuration
+                                self.remote = client
                                 online = True
                     await action(operation.id)
                 finally:
@@ -272,24 +260,29 @@ class ContribManager:
                 payload, expected_revision=revision, force=force
             )
             if self.remote is None
-            else await self.remote.call(
-                "commit", dict(payload), expected_revision=revision, force=force
+            else TypeAdapter(ConfigSnapshot).validate_python(
+                await self.remote.call(
+                    "configuration",
+                    "commit",
+                    payload,
+                    expected_revision=revision,
+                    force=force,
+                )
             )
         )
         await self._record(id, config_saved=True, applied=False)
         if not self.operations[id].pending_restart:
             await self._apply(id, snapshot)
 
-    async def _apply(self, id: UUID, snapshot: ConfigSnapshot | Remote) -> None:
+    async def _apply(self, id: UUID, snapshot: ConfigSnapshot) -> None:
         await self._record(id, phase="applying")
-        if self.remote is None:
-            assert isinstance(snapshot, ConfigSnapshot)
-            result = await self.configuration.apply(snapshot)
-        else:
-            result = await self.remote.call("apply", snapshot)
-            result = ConfigurationApplication.model_validate(
-                await result.call("model_dump", mode="json")
+        result = (
+            await self.configuration.apply(snapshot)
+            if self.remote is None
+            else ConfigurationApplication.model_validate(
+                await self.remote.call("configuration", "apply", snapshot)
             )
+        )
         await self._record(
             id,
             applied=result.applied,
@@ -621,12 +614,8 @@ class ContribManager:
             snapshot = (
                 await self.configuration.commit_preview(preview)
                 if self.remote is None
-                else await self.remote.call(
-                    "commit_preview",
-                    Construct(
-                        "bazaar_contrib_config:ConfigurationPreview",
-                        preview.model_dump(mode="json"),
-                    ),
+                else TypeAdapter(ConfigSnapshot).validate_python(
+                    await self.remote.call("configuration", "commit_preview", preview)
                 )
             )
             await self._record(id, config_saved=True, applied=False)

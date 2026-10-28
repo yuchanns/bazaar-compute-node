@@ -55,7 +55,7 @@ class MessageClient:
             ),
             **payload,
         }
-        response = await self.send("bazaar_contrib_messages:MESSAGES", request)
+        response = await self.send("messages", request)
         if response.get("ok") is not True:
             raise BccCommandError(
                 str(response.get("error", "command failed")),

@@ -8,6 +8,7 @@ from bazaar_contrib_audit import AUDIT
 from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
 from bazaar_contrib_messages import MESSAGES
 from bazaar_contrib_schema import SCHEMA
+from bazaar_contrib_sidecar import RemoteEntry
 from bazaar_contrib_storage import DB
 from bazaar_contrib_timer import TIMER
 from bazaar_core import Context, Contrib, ServiceKey
@@ -51,6 +52,7 @@ __all__ = [
     "ReminderUpdateResult",
     "Reminders",
     "reminder",
+    "remote",
     "resolve_reminder_anchor",
 ]
 
@@ -78,3 +80,5 @@ reminder = Contrib(
     offers=[REMINDER],
     lifespan=lifespan,
 )
+
+remote = RemoteEntry(REMINDER, ("request",))

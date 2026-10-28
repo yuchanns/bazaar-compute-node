@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Literal
 
 from bazaar_contrib_audit import AUDIT, Audit
 from bazaar_contrib_channel import Channel, ChannelRetryPolicy, ChannelSender
@@ -12,9 +13,13 @@ from bazaar_contrib_messages import (
     MESSAGES,
     Agent,
     MessageService,
+    Thread,
     ThreadConcurrency,
 )
+from bazaar_contrib_messages.models import InboxTargetSummary
+from bazaar_contrib_messages.states import Review
 from bazaar_contrib_schema import SCHEMA
+from bazaar_contrib_sidecar import RemoteEntry
 from bazaar_contrib_storage import DB, Database
 from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import Context, Contrib, ServiceKey
@@ -34,6 +39,7 @@ __all__ = [
     "CollaborationStore",
     "ContactReviewed",
     "collaboration",
+    "remote",
 ]
 
 
@@ -85,6 +91,28 @@ class Collaboration:
             raise ValueError("Agent is not available")
         return service
 
+    async def pending_contacts(self, agent_id: str) -> tuple[InboxTargetSummary, ...]:
+        owner = Agent(agent_id)
+        inbox = await self.for_agent(owner).messages.check_inbox(
+            owner, pending_only=False, limit=None, review=Review.PENDING
+        )
+        return inbox.targets
+
+    async def setting(self, agent_id: str, key: Literal["review.reply"]) -> str | None:
+        return await CollaborationStore(self.database, Agent(agent_id)).get_setting(key)
+
+    async def set_setting(
+        self, agent_id: str, key: Literal["review.reply"], value: str
+    ) -> None:
+        await self.for_agent(Agent(agent_id)).set_setting(key, value)
+
+    async def review_contact(self, thread_id: str, decision: Review) -> Review:
+        thread = Thread(thread_id)
+        for service in self._bindings.values():
+            if await service.messages.storage.get_thread(thread) is not None:
+                return (await service.review_contact(thread, decision)).review
+        raise ValueError(f"conversation not found: {thread_id}")
+
 
 COLLABORATION = ServiceKey[Collaboration]("collaboration")
 
@@ -103,4 +131,8 @@ collaboration = Contrib(
     accepts=[SCHEMA, LEGACY_NODE_MIGRATIONS, MESSAGES, DB, AUDIT, TIMER],
     offers=[COLLABORATION],
     lifespan=lifespan,
+)
+
+remote = RemoteEntry(
+    COLLABORATION, ("pending_contacts", "review_contact", "setting", "set_setting")
 )

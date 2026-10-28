@@ -10,13 +10,15 @@ from uuid import uuid7
 
 from bazaar_contrib_agent import AgentConfig, Config
 from bazaar_contrib_config import (
+    ConfigCandidate,
     ConfigConflict,
     ConfigDocument,
+    ConfigSnapshot,
     Configuration,
     ConfigurationApplication,
-    ConfigurationEnvironment,
 )
-from bazaar_contrib_sidecar import Client, Symbol
+from bazaar_contrib_sidecar import Client
+from pydantic import TypeAdapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,23 +77,11 @@ class AgentManagement:
                     )
         if self.configuration.start is not None:
             try:
-                configuration = await self.client.context.call(
-                    "accept", Symbol("bazaar_contrib_config:CONFIGURATION")
-                )
+                environment = await self.client.call("configuration", "environment")
             except FileNotFoundError, ConnectionRefusedError:
                 await self.configuration.commit(payload, expected_revision=revision)
                 return
-            environment = await configuration.get("environment")
-            environment = (
-                ConfigurationEnvironment.model_validate(
-                    await environment.call("model_dump", mode="json")
-                )
-                if environment is not None
-                else None
-            )
-            if (
-                environment.model_dump(mode="json") if environment is not None else None
-            ) != (
+            if environment != (
                 self.configuration.environment.model_dump(mode="json")
                 if self.configuration.environment is not None
                 else None
@@ -100,19 +90,18 @@ class AgentManagement:
                     "the sidecar belongs to another configuration; "
                     "select its configuration or endpoint"
                 )
-            _, snapshot = await configuration.call("read")
-            if (
-                await snapshot.get("revision") if snapshot is not None else None
-            ) != revision:
+            _, snapshot = TypeAdapter(
+                tuple[ConfigCandidate, ConfigSnapshot | None]
+            ).validate_python(await self.client.call("configuration", "read"))
+            if (snapshot.revision if snapshot is not None else None) != revision:
                 raise ConfigConflict(
                     "the sidecar configuration differs from the selected source"
                 )
-            snapshot = await configuration.call(
-                "commit", payload, expected_revision=revision
+            snapshot = await self.client.call(
+                "configuration", "commit", payload, expected_revision=revision
             )
-            result = await configuration.call("apply", snapshot)
             result = ConfigurationApplication.model_validate(
-                await result.call("model_dump", mode="json")
+                await self.client.call("configuration", "apply", snapshot)
             )
         else:
             snapshot = await self.configuration.commit(

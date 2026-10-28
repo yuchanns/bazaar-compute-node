@@ -43,6 +43,7 @@ from bazaar_contrib_messages import (
     Messages,
     MessageService,
     Mode,
+    SessionBindingError,
     Thread,
 )
 from bazaar_contrib_messages import Agent as AgentActor
@@ -52,6 +53,7 @@ from bazaar_contrib_messages.models import (
     Message,
     SenderIdentity,
 )
+from bazaar_contrib_messages.results import ThreadNotFoundError
 from bazaar_contrib_messages.states import ChannelTargetKind, MessageDirection, Review
 from bazaar_contrib_reminder import Reminders, resolve_reminder_anchor
 from bazaar_contrib_storage import Column, Compare, Database, Insert, Select, Value
@@ -193,20 +195,29 @@ class AgentLoop:
     async def validate_binding(
         self, actor: Actor, request: Mapping[str, object]
     ) -> None:
+        if request.get("agent_id") != self.actors.agent_id:
+            raise SessionBindingError("Agent binding is invalid")
+        if (
+            isinstance(actor, Thread)
+            and await self.messages.storage(
+                AgentActor(self.actors.agent_id)
+            ).get_thread(actor)
+            is None
+        ):
+            raise ThreadNotFoundError(f"unknown thread: {actor.id}")
         loop = self.actor_loops.get(actor)
         binding = (
             None
             if loop is None or isinstance(loop.state, states.Dormant)
             else loop.state.binding
         )
-        if (
-            binding is None
-            or request.get("runtime_session_id") != binding.session.id
-            or not secrets.compare_digest(
-                str(request.get("session_capability", "")), binding.capability
-            )
+        if binding is None or request.get("runtime_session_id") != binding.session.id:
+            raise SessionBindingError("runtime session binding is invalid")
+        capability = request.get("session_capability")
+        if not isinstance(capability, str) or not secrets.compare_digest(
+            capability.encode(), binding.capability.encode()
         ):
-            raise ValueError("The command is not bound to an active runtime session")
+            raise SessionBindingError("session capability is invalid")
 
     async def receive(self, connection: Connection) -> None:
         async for message in connection.channel.receive():
