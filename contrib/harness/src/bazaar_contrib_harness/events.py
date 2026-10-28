@@ -179,3 +179,16 @@ class HarnessOutput(BaseModel):
     provider_turn_id: str | None = None
     occurred_at_ms: int | None = None
     raw: JsonValue = None
+
+
+class HarnessSourceEvent(BaseModel):
+    """One native protocol message, recorded before selection or projection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    provider: str
+    source_id: str
+    sequence: int
+    direction: Literal["sent", "received"]
+    data: str
+    occurred_at_ms: int
+    monotonic_ns: int

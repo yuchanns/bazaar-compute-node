@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 lazy import logging
 
-from bazaar_contrib_audit import Audit, AuditContext
+from bazaar_contrib_audit import Audit, AuditContext, AuditError
 from bazaar_contrib_channel import (
     Channel,
     ChannelApprovalRequest,
@@ -18,6 +18,8 @@ from bazaar_contrib_harness import (
     ApprovalScope,
     HarnessOutput,
     SandboxPolicy,
+    ToolCallFailed,
+    TurnFailed,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,6 +177,14 @@ async def forward(
         ),
         payload=event.model_dump(mode="json"),
         occurred_at_ms=event.occurred_at_ms,
+        error=AuditError(
+            kind=event.payload.failure.reason.value,
+            message=event.payload.failure.message,
+        )
+        if isinstance(event.payload, TurnFailed)
+        else AuditError(kind="tool_call_failed", message=event.payload.error_message)
+        if isinstance(event.payload, ToolCallFailed)
+        else None,
     )
     if deliver:
         try:

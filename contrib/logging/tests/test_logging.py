@@ -529,3 +529,60 @@ async def test_optional_level_locations_and_size_rotation_preserve_logs(
             json.loads(line)["message"] == "node resource warning"
             for line in await stream.readlines()
         )
+
+
+async def test_audit_events_are_written_as_single_json_lines(capsys):
+    from bazaar_contrib_audit import AUDIT, AuditContext, AuditError, audit
+
+    @asynccontextmanager
+    async def publisher(ctx: Context):
+        await ctx.accept(AUDIT).publish(
+            "harness.tool.completed",
+            context=AuditContext(agent_id="Cloud", thread_id="weekend-edition"),
+            payload={"call": {"name": "file.read", "output": "第一章"}},
+        )
+        await ctx.accept(AUDIT).publish(
+            "harness.tool.failed",
+            context=AuditContext(agent_id="Cloud", thread_id="weekend-edition"),
+            payload={"call": {"name": "file.write"}},
+            error=AuditError(kind="tool_call_failed", message="磁盘已满"),
+        )
+        yield
+
+    async with (
+        ContribHub() as hub,
+        hub.enable(
+            Composition(
+                entries=[
+                    ContribEntry(
+                        name="logging", definition=logging, config={"format": "json"}
+                    ),
+                    ContribEntry(name="audit", definition=audit),
+                    ContribEntry(
+                        name="publisher",
+                        definition=Contrib(accepts=[AUDIT], lifespan=publisher),
+                    ),
+                ]
+            )
+        ),
+    ):
+        pass
+    records = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    events = [
+        (record["level"], json.loads(record["message"]))
+        for record in records
+        if record["logger"] == "bazaar_compute_node.audit"
+    ]
+    assert any(
+        level == "info"
+        and event["event_name"] == "harness.tool.completed"
+        and event["context"]["agent_id"] == "Cloud"
+        and event["payload"]["call"]["output"] == "第一章"
+        for level, event in events
+    )
+    assert any(
+        level == "error"
+        and event["event_name"] == "harness.tool.failed"
+        and event["error"] == {"kind": "tool_call_failed", "message": "磁盘已满"}
+        for level, event in events
+    )

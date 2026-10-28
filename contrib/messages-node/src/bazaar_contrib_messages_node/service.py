@@ -14,7 +14,7 @@ from time import time_ns
 from typing import cast
 from uuid import UUID, uuid7
 
-from bazaar_contrib_audit import Audit, AuditContext
+from bazaar_contrib_audit import Audit, AuditContext, AuditError
 from bazaar_contrib_channel import (
     Channel,
     ChannelError,
@@ -352,9 +352,7 @@ class NodeMessageService:
             },
             "metadata": dict(metadata or {}),
         }
-        if error_kind is not None:
-            payload["error_kind"] = error_kind.value
-        if error_message is not None:
+        if error_kind is None and error_message is not None:
             payload["error_message"] = error_message
         await self._audit.publish(
             event_name,
@@ -368,6 +366,9 @@ class NodeMessageService:
             ),
             payload=TypeAdapter(JsonValue).validate_python(payload),
             occurred_at_ms=at_ms,
+            error=None
+            if error_kind is None
+            else AuditError(kind=error_kind.value, message=error_message),
         )
 
     def prepare_attachment(self, source: ChannelSource) -> InboundAttachment:

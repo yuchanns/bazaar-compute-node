@@ -49,6 +49,7 @@ from bcn_agent_workbench import (
     read_context_cache,
 )
 from bcn_agent_workbench import ChannelMessage as InboundMessage
+from pydantic import TypeAdapter
 
 from bazaar_contrib_agent import AGENTS, AgentInstances
 
@@ -1212,7 +1213,7 @@ async def exercise(path: Path):
     assert await asyncio.to_thread((idle_workspace / "channel.closed").read_text)
     assert await asyncio.to_thread((workspaces["Cloud"] / "secondary.closed").read_text)
     async with aiofiles.open(path / "audit.jsonl") as stream:
-        records = [AuditEvent.model_validate_json(line) async for line in stream]
+        records = [TypeAdapter(AuditEvent).validate_json(line) async for line in stream]
     assert {"Cloud", "Tifa", "Barret"} <= {event.context.agent_id for event in records}
     requests = {
         event.context.turn_id: event

@@ -14,7 +14,7 @@ from time import time_ns
 from typing import cast
 from uuid import UUID, uuid7
 
-from bazaar_contrib_audit import Audit, AuditContext
+from bazaar_contrib_audit import Audit, AuditContext, AuditError
 from bazaar_contrib_channel import (
     ChannelRetryPolicy,
     ChannelSender,
@@ -636,6 +636,11 @@ class AgentLoop:
                 "session": binding.session.model_dump(mode="json"),
                 "failure": asdict(result.failure) if result.failure else None,
             },
+            error=None
+            if result.failure is None
+            else AuditError(
+                kind=result.failure.reason.value, message=result.failure.message
+            ),
         )
 
     async def close_session(self, loop: ActorLoop) -> None:
@@ -692,6 +697,7 @@ class AgentLoop:
                     ),
                     "session_id": session.id,
                 },
+                error=AuditError(kind=type(error).__name__, message=str(error)),
             )
             return
         await self.audit.publish(
@@ -704,6 +710,11 @@ class AgentLoop:
                 "session_id": session.id,
                 "failure": asdict(result.failure) if result.failure else None,
             },
+            error=None
+            if result.failure is None
+            else AuditError(
+                kind=result.failure.reason.value, message=result.failure.message
+            ),
         )
 
     async def background(self, loop: ActorLoop) -> bool:
@@ -1159,6 +1170,9 @@ class AgentLoop:
                         update={"thread_id": item.message.thread_id}
                     ),
                     payload=receipt.model_dump(mode="json"),
+                    error=None
+                    if receipt.status in {"confirmed", "queued"}
+                    else AuditError(kind=receipt.status),
                 )
             except Exception:
                 logger.exception("runtime error feedback failed")
@@ -1328,6 +1342,10 @@ class AgentLoop:
                                             "attempt": unavailable + 1,
                                             "failure": asdict(failure),
                                         },
+                                        error=AuditError(
+                                            kind=failure.reason.value,
+                                            message=failure.message,
+                                        ),
                                     )
                                     if unavailable:
                                         break
@@ -1414,6 +1432,9 @@ class AgentLoop:
                                     "error_type": type(error).__name__,
                                     "error_message": str(error),
                                 },
+                                error=AuditError(
+                                    kind=type(error).__name__, message=str(error)
+                                ),
                             )
                             loop.state = states.Idle(binding)
                             outcome = HarnessOutput(
