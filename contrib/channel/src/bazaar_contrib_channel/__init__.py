@@ -21,6 +21,7 @@ from .errors import (
     ChannelRejectedError,
     ChannelSendPhase,
     ChannelTimeoutError,
+    ChannelUnavailableError,
 )
 from .models import (
     ChannelApprovalRequest,
@@ -74,6 +75,7 @@ __all__ = [
     "ChannelTarget",
     "ChannelTargetPresentation",
     "ChannelTimeoutError",
+    "ChannelUnavailableError",
     "DmAddress",
     "DmRequest",
     "InboundAttachment",

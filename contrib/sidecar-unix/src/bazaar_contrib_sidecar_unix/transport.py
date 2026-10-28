@@ -23,22 +23,22 @@ async def listen(
     connected: Callable[[asyncio.StreamReader, asyncio.StreamWriter], None],
 ):
     path = Path(endpoint)
-    await asyncio.to_thread(path.parent.mkdir, mode=0o700, parents=True, exist_ok=True)
+    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
     try:
         mode = (await asyncio.to_thread(path.lstat)).st_mode
     except FileNotFoundError:
         pass
     else:
-        if not (stat.S_ISSOCK(mode) or stat.S_ISLNK(mode)):
-            raise FileExistsError(f"sidecar endpoint is not a socket: {path}")
-        try:
-            _, writer = await connect(endpoint)
-        except ConnectionRefusedError, FileNotFoundError:
-            pass
-        else:
-            writer.close()
-            await writer.wait_closed()
-            raise FileExistsError(f"sidecar endpoint already exists: {path}")
+        if stat.S_ISSOCK(mode) or stat.S_ISLNK(mode):
+            try:
+                _, writer = await connect(endpoint)
+            except ConnectionRefusedError, FileNotFoundError:
+                pass
+            else:
+                writer.close()
+                await writer.wait_closed()
+                raise FileExistsError(f"local command endpoint already exists: {path}")
+        # Left behind by a node that ended without taking it down: nobody listens.
         await asyncio.to_thread(path.unlink, missing_ok=True)
     # Binding explicitly keeps asyncio from unlinking a newly occupied address.
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

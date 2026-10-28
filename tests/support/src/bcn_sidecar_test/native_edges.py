@@ -57,12 +57,14 @@ async def exercise(directory: Path):
 
     if sys.platform != "win32":
         path = Path(endpoint)
-        for leftover in ("socket", "broken-symlink"):
+        for leftover in ("socket", "broken-symlink", "file"):
             if leftover == "socket":
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                     await asyncio.to_thread(sock.bind, endpoint)
-            else:
+            elif leftover == "broken-symlink":
                 await asyncio.to_thread(path.symlink_to, directory / "missing")
+            else:
+                await asyncio.to_thread(path.write_text, "left by an earlier node")
             async with node(config):
                 await command(config, "remote", "append", f"recovered {leftover}")
 

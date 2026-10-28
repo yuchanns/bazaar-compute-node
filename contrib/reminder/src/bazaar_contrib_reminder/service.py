@@ -9,7 +9,7 @@ from bazaar_contrib_messages import Actors, Agent, Messages, SessionBindingValid
 from bazaar_contrib_messages.models import InboundAttachment, Message
 from bazaar_contrib_storage import Database
 from bazaar_contrib_timer import Timer
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
 from .audit import ReminderAudit
 from .commands import ReminderCommands
@@ -95,13 +95,20 @@ class Reminders:
             await dispatcher.drain(timeout=shutdown_timeout)
 
     async def request(self, request: Mapping[str, object]) -> Mapping[str, object]:
-        owner = Agent(_AgentRequest.model_validate(request).agent_id)
+        try:
+            owner = Agent(_AgentRequest.model_validate(request).agent_id)
+        except ValidationError:
+            return {
+                "ok": False,
+                "code": "AGENT_REQUIRED",
+                "error": "agent_id must be a non-empty string",
+            }
         binding = self._bindings.get(owner)
         if binding is None:
             return {
                 "ok": False,
-                "code": "SERVICE_NOT_READY",
-                "error": "command service is not accepting requests",
+                "code": "AGENT_NOT_AVAILABLE",
+                "error": "Agent is not available",
             }
         return await binding[0](request)
 

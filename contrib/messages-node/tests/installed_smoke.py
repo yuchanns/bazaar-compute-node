@@ -451,7 +451,7 @@ async def exercise(directory: Path):
                 for packet in peers["Cloud"].deliveries[deliveries:]
             ]
             assert len(set(delivered_ids)) == len(delivered_ids)
-            for sender in ("hanchin", "provider-user-42"):
+            for sender in ("hanchin", "@hanchin"):
                 search = await bcc(
                     directory,
                     "Cloud",

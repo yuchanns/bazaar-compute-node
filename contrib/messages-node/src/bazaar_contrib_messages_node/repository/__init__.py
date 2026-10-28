@@ -1607,7 +1607,16 @@ class Repository(StorageOperationMixin, RepositoryBase):
                                         arguments=(Value(value=token),),
                                     ),
                                 ),
-                                equal("sender_id", token, "message"),
+                                All(
+                                    conditions=(
+                                        IsNull(
+                                            expression=Column(
+                                                name="sender", table="message"
+                                            )
+                                        ),
+                                        equal("sender_id", token, "message"),
+                                    )
+                                ),
                             )
                         ),
                     )

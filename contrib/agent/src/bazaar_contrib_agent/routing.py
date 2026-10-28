@@ -15,6 +15,7 @@ from bazaar_contrib_channel import (
     ChannelSendPart,
     ChannelSendRequest,
     ChannelTarget,
+    ChannelUnavailableError,
     DmAddress,
     DmRequest,
     InboundMessage,
@@ -108,24 +109,52 @@ class Channels:
         )
 
     def dm_address(self, request: DmRequest) -> DmAddress | None:
-        connection = self.select(request.channel, request.channel_identity)
-        address = connection.channel.dm_address(request)
-        if address is None:
-            return None
-        return address.model_copy(
-            update={
-                "channel_session_id": self.local_id(
-                    "channel-session", address.channel_session_id
-                ),
-                "thread_id": self.local_id("bcn-session", address.thread_id),
-                "channel_identity": connection.channel.get_identity().id,
-            }
-        )
+        for connection in (
+            [self.select(request.channel, request.channel_identity)]
+            if request.channel_identity is not None
+            else [
+                connection
+                for connection in self.connections.values()
+                if connection.state is states.ConnectionState.RUNNING
+            ]
+        ):
+            address = connection.channel.dm_address(request)
+            if address is None:
+                continue
+            address = address.model_copy(
+                update={
+                    "channel_session_id": self.local_id(
+                        "channel-session", address.channel_session_id
+                    ),
+                    "thread_id": self.local_id("bcn-session", address.thread_id),
+                    "channel_identity": connection.channel.get_identity().id,
+                }
+            )
+            return address
+        return None
 
     async def prepare_send(
         self, request: ChannelSendRequest
     ) -> tuple[ChannelSendPart, ...]:
-        connection = self.select(request.channel, request.channel_identity)
+        connection = next(
+            (
+                connection
+                for connection in self.connections.values()
+                if request.channel_identity is not None
+                and connection.state is not states.ConnectionState.STOPPED
+                and connection.kind == request.channel
+                and connection.channel.get_identity().id == request.channel_identity
+            ),
+            None,
+        )
+        if connection is None:
+            raise ChannelUnavailableError(
+                f"{request.channel} bot {request.channel_identity} is not up"
+                if request.channel_identity is not None
+                else f"conversation {request.actor_id} has no channel here",
+                phase="prepare",
+                delivery="not_sent",
+            )
         if connection.state is states.ConnectionState.DRAINED:
             raise ValueError("Channel is stopping and no longer accepts new sends")
         return await connection.channel.prepare_send(request)

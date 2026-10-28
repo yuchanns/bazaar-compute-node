@@ -388,13 +388,22 @@ async def _check_one_thread(
     cursor = await storage.get_consumer_cursor(thread_id)
     if cursor is None:
         cursor = ConsumerCursor(thread_id=thread_id.id)
+    limit = 100
     messages = await storage.list_messages(
         thread_id,
         after_seq=cursor.delivered_through_seq,
         direction=MessageDirection.INBOUND,
         notifying_only=True,
+        limit=limit,
     )
-    latest_seq = messages[-1].seq if messages else cursor.delivered_through_seq
+    # A full page stops at its last message so the rest come in the next check.
+    latest_seq = (
+        messages[-1].seq
+        if len(messages) == limit
+        else await storage.get_latest_message_seq(
+            thread_id, direction=MessageDirection.INBOUND
+        )
+    )
     references = await _referenced_messages(storage, thread_id, messages)
     canonical_targets = {message.target for message in (*messages, *references)}
     canonical_targets.update(

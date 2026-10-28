@@ -24,6 +24,7 @@ class RemoteError(RuntimeError):
 
     def __init__(self, type: str, message: str) -> None:
         self.type = type
+        self.message = message
         super().__init__(f"{type}: {message}")
 
 
