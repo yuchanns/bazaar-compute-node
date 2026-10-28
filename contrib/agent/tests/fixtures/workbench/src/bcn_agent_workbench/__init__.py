@@ -56,6 +56,8 @@ from bazaar_contrib_harness import (
     ApprovalHandler,
     ApprovalRequest,
     ApprovalResult,
+    ContentDelta,
+    ContentDeltaKind,
     HarnessBuilderConfig,
     HarnessExpire,
     HarnessFailure,
@@ -71,6 +73,12 @@ from bazaar_contrib_harness import (
     ProviderCallResult,
     ProviderCallStatus,
     SessionInput,
+    ToolCall,
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
     harness_builder_key,
 )
 from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribSpec, load
@@ -506,14 +514,52 @@ class DocumentStream:
                 packet = json.loads(data)
                 if "event" in packet:
                     event = packet["event"]
+                    metadata = event.get("metadata", {})
+                    match event["kind"]:
+                        case "started":
+                            payload = TurnStarted(event_name="document.started")
+                        case "completed":
+                            payload = TurnCompleted(event_name="document.completed")
+                        case "text":
+                            payload = ContentDelta(
+                                kind=ContentDeltaKind.AGENT_MESSAGE, text=event["text"]
+                            )
+                        case "tool.started":
+                            payload = ToolCallStarted(
+                                call=ToolCall(
+                                    call_id=metadata["id"],
+                                    name=metadata["name"],
+                                    input=metadata,
+                                )
+                            )
+                        case "tool.completed":
+                            payload = ToolCallCompleted(
+                                call=ToolCall(
+                                    call_id=metadata["id"],
+                                    name=metadata["name"],
+                                    input=metadata,
+                                    output=metadata["result"],
+                                )
+                            )
+                        case "inbox.checked":
+                            payload = ToolCallCompleted(
+                                call=ToolCall(
+                                    call_id=str(uuid7()),
+                                    name="inbox.checked",
+                                    output=metadata["messages"],
+                                )
+                            )
+                        case kind:
+                            raise AssertionError(f"unknown document event: {kind}")
                     self.events.put_nowait(
-                        HarnessOutput.model_validate(
-                            event
-                            | {
-                                "provider": "document",
-                                "provider_event": event["kind"],
-                                "raw": event,
-                            }
+                        HarnessOutput(
+                            session_id=event["session_id"],
+                            turn_id=event["turn_id"],
+                            payload=payload,
+                            provider="document",
+                            provider_event=event["kind"],
+                            occurred_at_ms=event["occurred_at_ms"],
+                            raw=event,
                         )
                     )
                 elif "steer" in packet:
@@ -532,11 +578,13 @@ class DocumentStream:
                     HarnessOutput(
                         session_id=self.turn.session_id,
                         turn_id=self.turn.id,
-                        kind="failed",
-                        failure=HarnessFailure(
-                            HarnessFailureReason.EXECUTION,
-                            (await self.stderr.read()).decode(),
-                            code=self.process.returncode,
+                        payload=TurnFailed(
+                            event_name="document.exited",
+                            failure=HarnessFailure(
+                                HarnessFailureReason.EXECUTION,
+                                (await self.stderr.read()).decode(),
+                                code=self.process.returncode,
+                            ),
                         ),
                         provider="document",
                     )

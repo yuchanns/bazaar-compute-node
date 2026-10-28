@@ -109,7 +109,7 @@ class Channels:
                     ),
                 )
             except Exception:
-                logger.exception("channel rejected %s", event.kind)
+                logger.exception("channel rejected %s", event.payload.type)
 
     async def request_approval(
         self,

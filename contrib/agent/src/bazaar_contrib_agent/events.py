@@ -156,7 +156,7 @@ async def forward(
 ) -> None:
     """Publish turn events and forward them to the channel."""
     await audit.publish(
-        f"harness.{event.kind}",
+        f"harness.{event.payload.type}",
         context=context.model_copy(
             update={
                 key: value
@@ -174,4 +174,4 @@ async def forward(
         try:
             channel.accept_turn_event(event, target=target)
         except Exception:
-            logger.exception("channel rejected %s", event.kind)
+            logger.exception("channel rejected %s", event.payload.type)

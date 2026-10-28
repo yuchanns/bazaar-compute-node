@@ -7,9 +7,7 @@ from pathlib import Path
 from time import time_ns
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
-
-from .outcomes import HarnessFailure
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class SandboxPolicy(StrEnum):
@@ -53,30 +51,6 @@ class HarnessTurn(BaseModel):
     session_id: str = Field(min_length=1)
     input_text: str
     attachments: tuple[HarnessAttachment, ...] = ()
-
-
-class HarnessOutput(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    session_id: str
-    turn_id: str
-    kind: str = Field(min_length=1)
-    text: str = ""
-    failure: HarnessFailure | None = None
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
-    provider: str | None = None
-    provider_event: str | None = None
-    provider_session_id: str | None = None
-    provider_turn_id: str | None = None
-    occurred_at_ms: int | None = None
-    raw: JsonValue = None
-
-    @model_validator(mode="after")
-    def validate_failure(self) -> HarnessOutput:
-        if self.kind == "failed" and self.failure is None:
-            raise ValueError("a failed Harness output requires a failure")
-        if self.kind != "failed" and self.failure is not None:
-            raise ValueError("only a failed Harness output can contain a failure")
-        return self
 
 
 class ApprovalScope(StrEnum):
