@@ -16,7 +16,6 @@ from uuid import UUID, uuid7
 
 from bazaar_contrib_audit import Audit, AuditContext
 from bazaar_contrib_channel import (
-    ChannelIdentity,
     ChannelRetryPolicy,
     ChannelSender,
     ChannelSendRequest,
@@ -159,9 +158,7 @@ class AgentLoop:
             if config.session is not None
             else SandboxPolicy.WORKSPACE_WRITE
         )
-        self.channels = Channels(
-            ChannelIdentity(id=agent.id, name=agent.name), channel_order
-        )
+        self.channels = Channels(agent.id, channel_order)
         self.runtimes: dict[str, Runtime] = {}
         self.actor_loops: dict[Actor, ActorLoop] = {}
         self.ingress: dict[Thread, asyncio.Queue[Ingress]] = {}
@@ -224,7 +221,18 @@ class AgentLoop:
             raise SessionBindingError("session capability is invalid")
 
     async def receive(self, connection: Connection) -> None:
+        await connection.ready.wait()
         async for message in connection.channel.receive():
+            message = message.model_copy(
+                update={
+                    "channel_session_id": self.channels.local_id(
+                        "channel-session", message.channel_session_id
+                    ),
+                    "thread_id": self.channels.local_id(
+                        "bcn-session", message.thread_id
+                    ),
+                }
+            )
             if (
                 self.channels.state is not states.Lifecycle.RUNNING
                 or connection.state is not states.ConnectionState.RUNNING
@@ -1242,6 +1250,8 @@ class AgentLoop:
                 target = routes[message.thread_id][1]
                 approval = ApprovalRoute(
                     self.channels,
+                    connection.kind,
+                    connection.channel.get_identity().id,
                     target,
                     session.id,
                     turn.id,

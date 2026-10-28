@@ -100,6 +100,14 @@ class MessageStorage(MessageSession, Protocol):
 
     async def find_known_sender(self, token: str) -> KnownSender | None: ...
 
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]: ...
+
+    async def backfill_channel_identity(
+        self, channel_session_id: str, *, channel_identity: str, provider_thread_id: str
+    ) -> None: ...
+
     async def find_message(
         self,
         channel: str,

@@ -540,7 +540,9 @@ async def steering(peer: Peer, draft: Path, persisted: asyncio.Queue[AuditEvent]
         if packet.get("event", {}).get("payload", {}).get("type") == "completed"
         and packet["event"]["turn_id"] == approval["approval"]["approval"]["turn_id"]
     )
-    assert ChannelTarget.model_validate(terminal["target"]) == first.target
+    assert ChannelTarget.model_validate(terminal["target"]) == first.target.model_copy(
+        update={"reply_to_message_id": first.id}
+    )
     # A replay and then another request still answer the new request's identity.
     await peer.write({"inbound": first.model_dump(mode="json")})
     continued = await report(peer, draft)

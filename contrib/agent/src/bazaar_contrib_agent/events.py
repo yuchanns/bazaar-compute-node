@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ApprovalRoute:
     channel: Channel
+    channel_kind: str
+    channel_identity: str
     target: ChannelTarget
     session_id: str
     turn_id: str
@@ -42,7 +44,11 @@ class ApprovalRoute:
         timeout: float,  # noqa: ASYNC109
     ) -> ApprovalResult:
         channel_request = ChannelApprovalRequest(
-            approval=request, target=self.target, sender_id=self.sender_id
+            approval=request,
+            target=self.target,
+            sender_id=self.sender_id,
+            channel=self.channel_kind,
+            channel_identity=self.channel_identity,
         )
         await self.audit.publish(
             "approval.requested",

@@ -161,10 +161,33 @@ async def channel_lifespan(ctx: Context, config: _ChannelConfig):
             config.provider,
             loop.channels.order[ctx.name],
         )
+        identity = connection.channel.get_identity()
+        for member in loop.channels.connections.values():
+            if (
+                member.state is states.ConnectionState.RUNNING
+                and member.kind == connection.kind
+                and member.channel.get_identity().id == identity.id
+            ):
+                positions = sorted(
+                    priority
+                    for name, priority in loop.channels.order.items()
+                    if name.startswith(f"{agent.name}/channel:")
+                )
+                first, second = sorted(
+                    (
+                        positions.index(member.priority) + 1,
+                        positions.index(connection.priority) + 1,
+                    )
+                )
+                error = ValueError(
+                    f"channel {connection.kind} identity {identity.id} is configured "
+                    f"twice (positions {first} and {second})"
+                )
+                loop.failure.fail(error)
+                raise error
         loop.channels.connections[connection.name] = connection
         task = group.create_task(loop.receive(connection))
         try:
-            await loop.recover()
             yield
         finally:
             task.cancel()

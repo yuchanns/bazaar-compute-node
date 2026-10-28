@@ -306,6 +306,11 @@ class TestChannel:
         while True:
             yield await self.inbound.get()
 
+    def backfill_provider_thread_id(
+        self, provider_thread_id: str, *, channel: str, channel_identity: str
+    ) -> str:
+        return provider_thread_id
+
     def accept_turn_event(self, event: HarnessOutput, *, target: ChannelTarget):
         self.outbound.put_nowait(
             {

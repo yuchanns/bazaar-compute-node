@@ -141,6 +141,8 @@ class ChannelApprovalRequest(BaseModel):
     approval: ApprovalRequest
     target: ChannelTarget
     sender_id: str
+    channel: str | None = None
+    channel_identity: str | None = None
 
 
 class DmRequest(BaseModel):
