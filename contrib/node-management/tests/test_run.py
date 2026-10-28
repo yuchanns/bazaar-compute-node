@@ -39,8 +39,9 @@ async def test_run_uses_selected_configuration_and_exits(tmp_path: Path, sig: in
         "bazaar_compute_node",
         "--configer-options",
         str(tmp_path / ("ignored.toml" if sig == signal.SIGTERM else configured.name)),
-        *(["--config", str(configured)] if sig == signal.SIGTERM else []),
         "run",
+        # 0.2's supervisor names the configuration after the command.
+        *(["--config", str(configured)] if sig == signal.SIGTERM else []),
         cwd=tmp_path,
         env=dict(os.environ) | {"BCN_HOME": str(tmp_path / "node")},
         stdout=asyncio.subprocess.PIPE,
@@ -48,11 +49,14 @@ async def test_run_uses_selected_configuration_and_exits(tmp_path: Path, sig: in
     )
     try:
         assert process.stdout is not None
-        ready = await process.stdout.readline()
-        if not ready:
-            _, errors = await process.communicate()
-            raise AssertionError(errors.decode())
-        assert "bcn ready" in ready.decode()
+        report = b""
+        while b"bcn ready" not in report:
+            line = await process.stdout.readline()
+            if not line:
+                _, errors = await process.communicate()
+                raise AssertionError(errors.decode())
+            report += line
+        assert b"node-management" in report and b"running" in report
         process.send_signal(sig)
         _, errors = await process.communicate()
         if sig == signal.SIGINT:

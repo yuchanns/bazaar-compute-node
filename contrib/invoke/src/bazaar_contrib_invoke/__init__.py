@@ -6,7 +6,14 @@ from contextlib import asynccontextmanager, contextmanager
 lazy import asyncio
 lazy import copy
 lazy import inspect
-lazy from collections.abc import Awaitable, Callable, Collection, Iterator, Sequence
+lazy from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Sequence,
+)
 lazy from concurrent.futures import CancelledError as FutureCancelledError
 lazy from functools import partial
 lazy from importlib.metadata import Distribution, entry_points
@@ -19,7 +26,14 @@ import click
 from bazaar_core import Context, Contrib, ServiceKey, discover
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["COMMANDS", "CommandCatalog", "CommandEntry", "Commands", "commands"]
+__all__ = [
+    "COMMANDS",
+    "CommandCatalog",
+    "CommandEntry",
+    "Commands",
+    "commands",
+    "table",
+]
 
 
 class CommandEntry(BaseModel):
@@ -52,6 +66,21 @@ class CommandLoadError(click.ClickException):
         )
 
 
+HELP = {"help_option_names": ["-h", "--help"]}
+
+
+def table(rows: Iterable[tuple[str, ...]], headers: tuple[str, ...]) -> str:
+    """Align command output in columns under their headers."""
+    rows = list(rows)
+    widths = [max(map(len, column)) for column in zip(headers, *rows, strict=True)]
+    return "\n".join(
+        "  ".join(
+            value.ljust(width) for value, width in zip(row, widths, strict=True)
+        ).rstrip()
+        for row in (headers, tuple("-" * width for width in widths), *rows)
+    )
+
+
 class CommandCatalog(click.Group):
     """Invoke's own entry-point protocol, independent of the core discovery group."""
 
@@ -62,7 +91,7 @@ class CommandCatalog(click.Group):
         entry_point_group: str = "bazaar_compute_node.commands",
         **options: Any,
     ) -> None:
-        super().__init__(**options)
+        super().__init__(context_settings=HELP, **options)
         self.failures: dict[str, CommandLoadError] = {}
         packages = {source.package for source in discover() if source.name in contribs}
         for point in entry_points(group=entry_point_group):
@@ -111,6 +140,10 @@ class CommandCatalog(click.Group):
         try:
             with self.make_context(prog_name, list(args)) as ctx:
                 return self.invoke(ctx)
+        except click.exceptions.NoArgsIsHelpError as error:
+            # Asking for nothing is a question, answered on stdout as 0.2 did.
+            click.echo(error.ctx.get_help())
+            return None
         except CommandLoadError as error:
             failure = error
             raise
@@ -217,8 +250,11 @@ class Commands(click.Group):
 
             def invoke():
                 command = bind(self)
-                with command.make_context(prog_name, list(args), **context) as ctx:
-                    return command.invoke(ctx)
+                try:
+                    with command.make_context(prog_name, list(args), **context) as ctx:
+                        return command.invoke(ctx)
+                except click.exceptions.NoArgsIsHelpError as error:
+                    click.echo(error.ctx.get_help())
 
             worker = asyncio.create_task(asyncio.to_thread(invoke))
             try:
@@ -247,7 +283,7 @@ COMMANDS = ServiceKey[Commands]("invoke.commands")
 
 @asynccontextmanager
 async def lifespan(ctx: Context):
-    ctx.offer(COMMANDS, Commands())
+    ctx.offer(COMMANDS, Commands(context_settings=HELP))
     yield
 
 

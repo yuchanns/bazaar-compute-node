@@ -1,5 +1,5 @@
-{% if result.agents %}
-{{ rows | table(("ID", "Name", "Channels", "Harnesses")) }}
+{% if result[0].agents %}
+{{ rows | agent_table }}
 {% else %}
 No agents
 {% endif %}

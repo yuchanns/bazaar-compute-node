@@ -16,6 +16,7 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
         for package in (
             "bazaar-core",
             "bazaar-contrib-agent",
+            "bazaar-contrib-agent-command",
             "bazaar-contrib-audit",
             "bazaar-contrib-channel",
             "bazaar-contrib-timer",

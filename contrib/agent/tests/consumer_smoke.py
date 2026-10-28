@@ -22,6 +22,7 @@ from bazaar_core import (
     load,
 )
 from bcn_agent_journal import JOURNAL
+from bcn_agent_workbench import configured
 from blockbuster import blockbuster_ctx
 from custom_smoke import exercise as exercise_custom
 from provider_smoke import exercise as exercise_providers
@@ -51,10 +52,14 @@ async def exercise(path: Path):
     project = path / "project"
     await asyncio.to_thread(project.mkdir)
     await asyncio.to_thread((project / "notes.txt").write_text, "persistent project")
+    providers = {
+        "channel": [{"kind": "test-channel"}],
+        "harness": [{"kind": "document"}],
+    }
     config = {
         "agents": [
-            {"id": "Cloud", "name": "Cloud"},
-            {"id": "Tifa", "name": "Tifa", "workspace": str(project)},
+            {"id": "Cloud", "name": "Cloud", **providers},
+            {"id": "Tifa", "name": "Tifa", "workspace": str(project), **providers},
         ]
     }
     # Run the installed entry itself before composing an independent consumer.
@@ -74,10 +79,15 @@ async def exercise(path: Path):
                 ContribSpec(contrib="messages-node"),
                 ContribSpec(contrib="collaboration"),
                 ContribSpec(contrib="reminder"),
+                ContribSpec(contrib="channel-builders"),
+                ContribSpec(contrib="harness-builders"),
+                ContribSpec(contrib="test-channel-builder"),
+                ContribSpec(contrib="document-builder"),
                 ContribSpec(contrib="agent-execution"),
                 ContribSpec(contrib="agent", config=config),
             ],
         )
+        composition = await configured(path / "consumer.toml", composition)
         composition = composition.model_copy(
             update={
                 "entries": (
@@ -144,7 +154,9 @@ async def exercise(path: Path):
     async def control(ctx: Context):
         async with AsyncExitStack() as first, AsyncExitStack() as second:
             for stack, item in zip((first, second), config["agents"]):
-                composition = compose(AgentConfig.model_validate(item))
+                composition = compose(
+                    AgentConfig.model_validate(item | {"channel": [], "harness": []})
+                )
                 journal = await asyncio.to_thread(
                     load, [ContribSpec(contrib="agent-journal")]
                 )

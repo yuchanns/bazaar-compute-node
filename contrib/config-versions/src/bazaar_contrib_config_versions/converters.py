@@ -33,12 +33,12 @@ _VERSION = TypeAdapter(Literal["1", "2", "3", "4", "5"])
 
 
 class _Node(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # 0.2 read the keys it knew and passed over the rest.
+    model_config = ConfigDict(extra="ignore")
     storage: str = "sqlite"
     database_name: str = "bcn.sqlite3"
     audit: Literal["logging", "server"] = "logging"
     control: Literal["none", "server"] = "none"
-    logging: dict[str, Any] = Field(default_factory=dict)
     server: dict[str, Any] = Field(default_factory=dict)
     lang: str | None = Field(default=None, min_length=1)
     endpoint: str | None = None
@@ -60,7 +60,7 @@ class _ProviderV4(BaseModel):
 class _AgentV4(BaseModel):
     """Agent settings in the V4 configuration format."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="ignore", frozen=True)
     id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     mode: Literal["session", "dangerous_individual"] = "session"
@@ -70,7 +70,7 @@ class _AgentV4(BaseModel):
 
 
 class _V4(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
     version: Literal["4"]
     node: _Node = Field(default_factory=_Node)
     agent: tuple[_AgentV4, ...] = ()
@@ -119,18 +119,13 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
         ]
     )
     if node.audit == "logging":
-        add("logging", "logging", dict(node.logging))
-        changes.extend(
-            [
-                FieldChange(
-                    source="node.logging",
-                    target="contribs[bazaar-contrib-logging].enabled[logging].config",
-                ),
-                FieldChange(
-                    source="node.audit",
-                    target="contribs[bazaar-contrib-logging].enabled[logging]",
-                ),
-            ]
+        # 0.2's logging sink took no settings from [node.logging].
+        add("logging", "logging")
+        changes.append(
+            FieldChange(
+                source="node.audit",
+                target="contribs[bazaar-contrib-logging].enabled[logging]",
+            )
         )
     add("commands", "invoke")
     endpoint = node.endpoint
@@ -143,6 +138,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     transport = "sidecar-windows" if sys.platform == "win32" else "sidecar-unix"
     add(transport, transport, endpoint)
     add("node-management", "node-management")
+    add("node-health", "node-management")
     changes.extend(
         [
             FieldChange(
@@ -180,6 +176,8 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     if agents:
         add("agent", "agent", {"agents": agents})
         add("agent-execution", "agent")
+        add("agent-activity", "agent")
+        add("agent-command", "agent-command")
     document = ConfigDocument(
         contribs=tuple(
             ContribPackage(

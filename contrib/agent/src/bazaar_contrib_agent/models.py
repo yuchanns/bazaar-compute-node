@@ -102,6 +102,11 @@ class Config(BaseModel):
             values = [getattr(agent, field) for agent in self.agents]
             if len(values) != len(set(values)):
                 raise ValueError(f"agents.{field} values must be unique")
+        for agent in self.agents:
+            if not agent.channel or not agent.harness:
+                raise ValueError(
+                    f"agent {agent.name} needs at least one channel and one harness"
+                )
         return self
 
     @model_validator(mode="after")

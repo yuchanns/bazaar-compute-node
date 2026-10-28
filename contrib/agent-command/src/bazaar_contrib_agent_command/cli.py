@@ -6,9 +6,11 @@ import asyncio
 import tomllib
 from collections.abc import Awaitable, Callable, Iterable
 from copy import deepcopy
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import click
+from bazaar_contrib_invoke import table
 from bazaar_contrib_sidecar import Client
 from jinja2 import Environment, PackageLoader, StrictUndefined
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
@@ -113,15 +115,46 @@ def parameters(
     return values
 
 
-def table(rows: Iterable[tuple[str, ...]], headers: tuple[str, ...]) -> str:
-    rows = list(rows)
-    widths = [max(map(len, column)) for column in zip(headers, *rows, strict=True)]
-    return "\n".join(
-        "  ".join(
-            value.ljust(width) for value, width in zip(row, widths, strict=True)
-        ).rstrip()
-        for row in (headers, tuple("-" * width for width in widths), *rows)
-    )
+AGENT_HEADERS = ("Name", "Channels", "Harnesses", "State", "Today", "Last event")
+
+
+def compact(tokens: int) -> str:
+    for size, letter in (
+        (1_000_000_000_000, "T"),
+        (1_000_000_000, "B"),
+        (1_000_000, "M"),
+    ):
+        if tokens >= size:
+            return f"{tokens / size:.1f}{letter}"
+    if tokens >= 1_000:
+        return f"{tokens / 1_000:.0f}K"
+    return str(tokens)
+
+
+def today(usage: dict[str, Any]) -> str:
+    parts = [compact(usage[kind]) for kind in ("input", "output", "cached")]
+    if usage["cost"] is not None:
+        parts.append(f"${usage['cost']:.2f}")
+    return "/".join(parts)
+
+
+def clock(at_ms: int) -> str:
+    moment = datetime.fromtimestamp(at_ms / 1000)
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return moment.strftime("%H:%M:%S" if moment >= midnight else "%Y-%m-%d %H:%M:%S")
+
+
+def agent_table(agents: Iterable[tuple[tuple[str, ...], str | None]]) -> str:
+    """The agents table, each failure reason on its own line under State."""
+    agents = list(agents)
+    lines = table((cells for cells, _ in agents), AGENT_HEADERS).split("\n")
+    state = sum(len(dashes) + 2 for dashes in lines[1].split("  ")[:3])
+    output = lines[:2]
+    for line, (_, reason) in zip(lines[2:], agents, strict=True):
+        output.append(line)
+        if reason:
+            output.append(" " * state + reason)
+    return "\n".join(output)
 
 
 def create_commands(service: AgentManagement, client: Client) -> click.Group:
@@ -134,12 +167,13 @@ def create_commands(service: AgentManagement, client: Client) -> click.Group:
         lstrip_blocks=True,
     )
     templates.filters["table"] = table
+    templates.filters["agent_table"] = agent_table
 
     async def execute(
         operation: Awaitable[Any],
         template: str,
         *,
-        rows: Callable[[Any], Iterable[tuple[str, ...]]] | None = None,
+        rows: Callable[[Any], Iterable[Any]] | None = None,
         err: bool = False,
         **context: object,
     ):
@@ -160,21 +194,41 @@ def create_commands(service: AgentManagement, client: Client) -> click.Group:
     def agent():
         pass
 
+    async def listing():
+        configuration = await service.read()
+        try:
+            activity = await client.call("agent-activity", "agents")
+        except FileNotFoundError, ConnectionRefusedError:
+            activity = None
+        return configuration, activity
+
+    def agent_rows(result):
+        configuration, activity = result
+        for agent in configuration.agents:
+            cells = (
+                agent.name,
+                ", ".join(provider.kind for provider in agent.channel),
+                ", ".join(provider.kind for provider in agent.harness),
+            )
+            current = None if activity is None else activity.get(agent.id)
+            if current is None:
+                state = "offline" if activity is None else "stopped"
+                yield (*cells, state, "", ""), None
+                continue
+            event = current["event"]
+            yield (
+                (
+                    *cells,
+                    current["state"],
+                    today(current["usage"]),
+                    "" if event is None else f"{event} {clock(current['event_at_ms'])}",
+                ),
+                current["reason"],
+            )
+
     @agent.command("list", help="List agents")
     def list_agents():
-        return execute(
-            service.read(),
-            "agents.tpl",
-            rows=lambda result: (
-                (
-                    agent.id,
-                    agent.name,
-                    ", ".join(provider.kind for provider in agent.channel),
-                    ", ".join(provider.kind for provider in agent.harness),
-                )
-                for agent in result.agents
-            ),
-        )
+        return execute(listing(), "agents.tpl", rows=agent_rows)
 
     @agent.command("add", help="Add an agent")
     @click.option("--name", required=True, metavar="NAME", help="The name of the agent")

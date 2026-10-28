@@ -79,6 +79,13 @@ async def dispatch(
         raise failures[0]
 
 
+NODE_OPTIONS = {
+    "--configer": "configer",
+    "--configer-options": "configer_options",
+    "--config": "configer_options",
+}
+
+
 @click.command(
     add_help_option=False,
     context_settings={
@@ -110,10 +117,28 @@ async def dispatch(
 @click.pass_context
 def main(ctx: click.Context, configer: str, configer_options: tuple[str, ...]) -> None:
     """Run Bazaar Compute Node."""
+    # 0.2 also took node options after the command; those replace earlier ones.
+    args: list[str] = []
+    after: dict[str, list[str]] = {}
+    remaining = iter(ctx.args)
+    for arg in remaining:
+        name, equals, value = arg.partition("=")
+        if name not in NODE_OPTIONS:
+            args.append(arg)
+            continue
+        if not equals:
+            value = next(remaining, None)
+            if value is None:
+                raise click.BadParameter("requires a value", param_hint=name)
+        after.setdefault(NODE_OPTIONS[name], []).append(value)
+    if "configer" in after:
+        configer = after["configer"][-1]
+    if "configer_options" in after:
+        configer_options = tuple(after["configer_options"])
     try:
         asyncio.run(
             dispatch(
-                ctx.args,
+                args,
                 prog_name=ctx.info_name,
                 configer=configer,
                 configer_options=configer_options,

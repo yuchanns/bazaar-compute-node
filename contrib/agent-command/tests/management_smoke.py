@@ -90,9 +90,7 @@ async def exercise(path: Path, source: str, tests: Path):
         if entry["entry"] == "contrib-manager"
     )
     await cli("contrib", "edit", str(index), "--option", f"host_source={source}")
-    await cli(
-        "contrib", "add", "bazaar-contrib-agent-command", "--source", source, "--enable"
-    )
+    # The default composition already offers the agent commands.
     assert "No agents" in await cli("agent", "list")
     await cli(
         "contrib",
@@ -188,6 +186,7 @@ async def exercise(path: Path, source: str, tests: Path):
     assert updated[0]["harness"][0]["env"] == {"EDITOR_NAME": "EDITOR_SOURCE"}
     listing = await cli("agent", "list")
     assert "Cloud desk" in listing and "Tifa" in listing
+    assert "offline" in listing
     assert not await asyncio.to_thread((path / "Cloud").exists)
     assert not await asyncio.to_thread((path / "Tifa").exists)
     await asyncio.to_thread(
@@ -339,6 +338,7 @@ async def exercise(path: Path, source: str, tests: Path):
         peer = await connect("Cloud")
         stack.push_async_callback(peer.aclose)
         assert [item["id"] for item in await agents()] == [cloud["id"], tifa["id"]]
+        assert "running" in await cli("agent", "list")
         await peer.write({"inbound": request.model_dump(mode="json")})
         row = await pending(cloud["id"])
         assert row["thread_id"] in await cli("agent", "review", "list", cloud["id"])
@@ -515,10 +515,9 @@ async def exercise(path: Path, source: str, tests: Path):
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            assert (
-                process.stdout is not None
-                and await process.stdout.readline() == b"bcn ready\n"
-            )
+            assert process.stdout is not None
+            while (line := await process.stdout.readline()) != b"bcn ready\n":
+                assert line, "bcn run ended before it was ready"
         finally:
             if process.returncode is None:
                 process.send_signal(signal.SIGTERM)

@@ -43,7 +43,8 @@ async def exercise(path: Path):
         "name": "Recovery",
         "workspace": str(path),
         "channel": [{"kind": "test-channel"}],
-        "harness": [],
+        # The first node cannot start a session, so the request stays unread.
+        "harness": [{"kind": "document", "env": {"MISSING": "BCN_RECOVERY_MISSING"}}],
     }
     contribs = [
         {"contrib": "audit"},

@@ -92,8 +92,7 @@ async def test_real_agent_commands(
         requirements = [
             name
             for name in packages
-            if name.startswith("bazaar-")
-            and name not in {"bazaar-compute-node", "bazaar-contrib-agent-command"}
+            if name.startswith("bazaar-") and name != "bazaar-compute-node"
         ]
         if deployment == "tool":
             prefix = tmp_path / "tools" / "bazaar-compute-node"

@@ -328,11 +328,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     )
     assert "reader started" in await asyncio.to_thread(journal.read_text)
 
-    # A legacy document remains readable until its full candidate can be saved.
+    # A legacy document whose candidate cannot be saved remains readable.
     legacy = path / "legacy-recovery.toml"
     async with FileConfigStore(legacy) as store:
         await store.write(
-            {"version": "4", "node": {"logging": {"retention_days": 0}}},
+            {"version": "4", "agent": [{"id": "legacy", "name": "Legacy"}]},
             expected_revision=None,
         )
     converted, _ = await invoke(
@@ -340,20 +340,6 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         lambda manager: manager.configuration.read(),
     )
     assert converted.changes
-    position = next(
-        index
-        for index, entry in enumerate(
-            entry
-            for package in ConfigDocument.model_validate(converted.payload).contribs
-            for entry in package.enabled
-        )
-        if entry.entry == "logging"
-    )
-    await cli("edit", str(position), "--option", "retention_days=7", config=legacy)
-    async with FileConfigStore(legacy) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        ConfigDocument.model_validate(snapshot.payload)
     # Handwritten platform declarations can leave the installed-only enabled field out.
     async with FileConfigStore(config) as store:
         snapshot = await store.read()
