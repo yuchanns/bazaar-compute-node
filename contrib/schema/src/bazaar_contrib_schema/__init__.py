@@ -211,7 +211,11 @@ class Schema:
         )
 
     async def _version(
-        self, session: Session, package: str, progress: Progress | None
+        self,
+        session: Session,
+        package: str,
+        progress: Progress | None,
+        migrations: tuple[Migration, ...] = (),
     ) -> int:
         for identity in (
             package,
@@ -255,6 +259,12 @@ class Schema:
                     raise MigrationError(
                         f"{package} existing migration ledger has a version gap"
                     )
+                names = {migration.version: migration.name for migration in migrations}
+                for row in history:
+                    if names.get(cast(int, row["version"]), row["name"]) != row["name"]:
+                        raise MigrationError(
+                            f"migration {row['version']} does not match its ledger entry"
+                        )
                 version = cast(int, history[-1]["version"])
                 await self._record(
                     session, package, version, cast(str, history[-1]["name"])
@@ -309,7 +319,9 @@ class Schema:
                     )
 
             async def apply(session: Session) -> None:
-                version = await self._version(session, package, module.progress)
+                version = await self._version(
+                    session, package, module.progress, module.migrations
+                )
                 if version > module.version:
                     raise MigrationError(
                         f"{package} has unknown applied migration version {version}"

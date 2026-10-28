@@ -13,7 +13,7 @@ lazy from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 lazy from typing import Self
 
 import bazaar_contrib_storage as storage
-from bazaar_contrib_timer import Timer, wait_for
+from bazaar_contrib_timer import Timer, timeout, wait_for
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 lazy import aiosqlite
 lazy from jinja2 import Environment
@@ -34,7 +34,7 @@ class SqliteConfig(BaseModel):
     max_idle_readers: int = Field(default=2, gt=0)
     max_readers: int | None = Field(default=None, gt=0)
     reader_idle_timeout: float = Field(default=60, gt=0, allow_inf_nan=False)
-    shutdown_timeout: float = Field(default=20, gt=0, allow_inf_nan=False)
+    shutdown_timeout: float = Field(default=5, gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def pool_size(self) -> Self:
@@ -275,6 +275,16 @@ async def _connect(
         raise
 
 
+async def _reclaim(session: SqliteSession) -> None:
+    """Return free pages and settle the WAL on every start, inside SQLite alone."""
+    row = await session.fetchone("PRAGMA freelist_count")
+    if row is not None and row[0]:
+        await session.execute("VACUUM")
+    row = await session.fetchone("PRAGMA wal_checkpoint(TRUNCATE)")
+    if row is None or row[0] != 0:
+        raise storage.MigrationError("SQLite WAL checkpoint could not complete")
+
+
 @asynccontextmanager
 async def open_database(
     config: SqliteConfig, timer: Timer
@@ -284,17 +294,23 @@ async def open_database(
         config.path
         or Path(os.environ.get("BCN_HOME") or Path.home()) / ".bcn" / "bcn.sqlite3"
     )
-    with storage_errors():
-        path = await asyncio.to_thread(lambda: path.expanduser().resolve())
-        await asyncio.to_thread(
-            path.parent.mkdir, mode=0o700, parents=True, exist_ok=True
-        )
-        writer = await _connect(path, config, templates, query_only=False)
+    writer: aiosqlite.Connection | None = None
     readers: list[aiosqlite.Connection] = []
     try:
         with storage_errors():
-            if os.name != "nt":
-                await asyncio.to_thread(path.chmod, 0o600)
+            # Opening, like 0.2's storage start, shares one budget.
+            async with timeout(timer, 60_000):
+                path = await asyncio.to_thread(lambda: path.expanduser().resolve())
+                await asyncio.to_thread(
+                    path.parent.mkdir, mode=0o700, parents=True, exist_ok=True
+                )
+                if os.name != "nt":
+                    # The database lives in the node's .bcn directory, kept private.
+                    await asyncio.to_thread(path.parent.chmod, 0o700)
+                writer = await _connect(path, config, templates, query_only=False)
+                if os.name != "nt":
+                    await asyncio.to_thread(path.chmod, 0o600)
+                await _reclaim(SqliteSession(writer))
             for _ in range(config.max_idle_readers):
                 readers.append(await _connect(path, config, templates, query_only=True))
         async with asyncio.TaskGroup() as tasks:
@@ -326,4 +342,5 @@ async def open_database(
     finally:
         for reader in readers:
             await reader.close()
-        await writer.close()
+        if writer is not None:
+            await writer.close()

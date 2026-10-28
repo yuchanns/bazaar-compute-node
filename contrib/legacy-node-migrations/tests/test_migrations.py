@@ -112,7 +112,10 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
         await schema.start()
         async with registered(schema, modules):
             for table in (
-                table for module in modules.values() for table in module.tables
+                table
+                for module in modules.values()
+                for table in module.tables
+                if table != "schema_migrations"
             ):
                 if await reference.table_exists(table):
                     rows = await database.select(Select(table=table))
@@ -120,7 +123,14 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
                     assert sorted(map(repr, rows)) == sorted(
                         map(repr, expected_rows)
                     ), table
-        assert await database.select(Select(table="schema_migrations")) == original
+        # 0.2's v9 adds a column to its ledger; every original entry stays as written.
+        assert (
+            tuple(
+                {key: row[key] for key in original[0]}
+                for row in await database.select(Select(table="schema_migrations"))
+            )
+            == original
+        )
 
 
 async def test_new_database_uses_current_baseline_and_retains_new_data(

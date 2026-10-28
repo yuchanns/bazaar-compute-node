@@ -1023,6 +1023,7 @@ MODULE = ModuleSchema(
         "runtime_events",
         "runtime_sessions",
         "runtime_turns",
+        "schema_migrations",
         "settings",
         "threads",
     ),
@@ -1185,7 +1186,15 @@ MODULE = ModuleSchema(
         Migration(
             version=9,
             name="remove_runtime_events",
-            operations=(s.DropTable(table="runtime_events"),),
+            operations=(
+                s.AddColumn(
+                    table="schema_migrations",
+                    column=s.ColumnDefinition(
+                        name="compaction_completed_at_ms", type="integer", nullable=True
+                    ),
+                ),
+                s.DropTable(table="runtime_events"),
+            ),
         ),
         Migration(
             version=10,
