@@ -2364,3 +2364,155 @@ app 的普通 Python 入口提供启动输入和默认资源，core 的运行接
 
 所有测试使用测试专用配置、临时数据和隔离进程。真实外部 provider 使用现有 TestChannel 控制面；
 三平台 native service 测试使用独立 CI runner。测试观察有效业务流程与资源行为，使用真实实现和构建产物。
+
+## 0.2 行为对齐（2026-10-28）
+
+本线程按 0.2.3 逐块对照 0.3 的实际行为，裁决记录在本开发线程 `3c0949a7`。
+对齐口径是同样的输入得到同样的结果与副作用；内部重构且最终结果相同的差别不处理。
+下列 Tasks 串行交付，每个 Task 完成后停下等待 review。
+
+### Task 19：sidecar 远程调用边界
+
+现有 sidecar 会话把实例 Context 整体交给连接方：`accept` 可取任意服务 key，取得的对象可调用任意公开成员，
+协议中的 import／construct 可在节点进程内按路径导入并构造对象。0.2 的 `bcn.sock` 只接受命令与控制请求，
+命令入口按 `app/agent.py::_validate_actor_binding` 校验 agent、会话与 capability。按以下方式收敛，core 与 `Contrib` 不变：
+
+- 包在 `bazaar_compute_node.remotes` entry point 分组声明 `RemoteEntry(服务 key, 允许的成员)`，装了即公开；
+  业务插件的 accepts 不变，也不依赖 sidecar 运行。sidecar 启动时读取该分组，同名重复声明报错。
+- 协议只有服务名、成员名与 JSON 参数。会话按声明查表，未声明的服务或成员返回 `LookupError`；
+  每次调用按声明的 key 取服务、调用结束释放，目标服务未运行时把框架错误返回调用方。
+  参数按方法签名经 pydantic 校验，返回值转成 JSON；移除远端对象引用与任意路径导入、构造。
+- 当前声明：messages `request`；reminder `request`；collaboration `pending_contacts`、`review_contact`、
+  `setting`、`set_setting`（key 限 `review.reply`，读直接查存储，写交给运行中的 agent，与 0.2 control 接口一致）；
+  configuration `environment`、`read`、`commit`、`commit_preview`、`apply`。
+- bcc、agent-command 与 manager 按名字调用，配置快照按值传递；`bcn agent review` 的会话归属由节点内 collaboration 查找。
+- 命令入口恢复 agent_id、Thread 存在性、runtime session 与 capability 校验，失败分别返回
+  `SESSION_BINDING_FAILED` 与 `SESSION_NOT_FOUND`，文案沿用 0.2。
+
+已知差异：`review approve` 的会话所属 agent 已配置但未运行时，报 conversation not found（原为 Agent is not available）。
+测试依赖旧远端对象图翻节点内部状态的断言删除，业务结果改由公开命令、只读测试库与真实回信观察。
+验证使用真实 Unix socket 安装态场景及受影响包的安装态业务测试。
+
+### Task 20：恢复 0.2 的中立执行事件模型
+
+`HarnessOutput` 当前只有 `kind`／`text`／`metadata`／`raw`，provider 的原生语义无法以公共类型表达。
+按 0.2 `core/models/events.py` 恢复公共载荷：
+
+- `ContentDelta` 四类内容（agent_message、plan、reasoning_text、reasoning_summary）及 `index`；
+  `ToolCall` 的 `call_id`、`name`、`parent_call_id`、`input`、`output`；`ToolCallTextDelta`、`ToolCallPatchUpdated`、
+  `FileChangeEntry`、`ToolCallInteraction`；工具开始／完成／失败；`TokenUsage`／`UsageUpdated`；上下文压缩开始／完成。
+- 回合级事件沿用已确认的 `HarnessFailure` 与取消表达，`TurnFailed` 携带结构化失败。
+- 载荷以公共 Pydantic 联合类型承载，事件类型标识用于 JSON 序列化与还原；provider 在边界完成原生投影，
+  `raw` 只作诊断，不代替语义。Agent 与 Channel 消费对应中立类型。
+- Codex 与 Claude Code 的投影修订随各自 provider 仓库交付，主仓只提供契约与消费。
+
+验证使用独立 wheel／sdist 与真实 TestChannel 场景，核对推理分类、工具输入输出、文件变更、用量与压缩事件
+经公共模型往返后语义不变，审计与 Channel 消费一致。
+
+### Task 21：channel 与 agent 的聚合边界
+
+0.2 的 `Channels` 与单个 `Channel` 遵守同一接口，`app/agent.py::_backfill_channel_identity` 在启动时按配置顺序回填旧会话。
+当前聚合缺少回填委托，`get_identity` 返回 Agent 身份，审批请求丢失渠道与 bot 身份，回合事件丢弃消息锚点，
+同一 Agent 重复配置同一 bot 不再于启动时拒绝。
+
+- 公共 `Channel` 保留 `backfill_provider_thread_id`，聚合按同一渠道选择规则委托给底层实现；
+  Messages 暴露 `list_channel_sessions_without_identity` 与 `backfill_channel_identity`。
+- 渠道就绪后按配置顺序完成身份与 provider thread 回填，再恢复未读与接收入站。
+- 重复 kind／bot identity 在登记时拒绝，通过既有失败信号结束所属执行组合。
+- 入站与主动 DM 地址按 `uuid5(bcn:{agent_id}:{kind}:{原 ID})` 转换 channel-session／bcn-session 身份；
+- `get_identity` 返回第一个运行中渠道的身份；审批请求携带可选的 `channel`／`channel_identity`，按 bot 身份选择渠道，
+  不可用时返回 rejected／`channel_unavailable`；
+  `ChannelTarget` 的消息锚点随回合事件保留，供 channel 的活动状态使用。
+- 单渠道与聚合的业务状态由 provider 自持，消费者通过服务查询或订阅状态事件，跨进程沿 sidecar 转发；
+  插件加载与运行状态继续由 core 的 status 服务提供。
+
+验证使用真实配置启用、消息持久化、主动 DM、审批、旧会话重启回填与退出；重复 bot 配置须在启动时被拒绝。
+
+### Task 22：审计全量发布与日志订阅
+
+`NodeAudit` 已按完整 payload 发布，但默认组合没有订阅者，turn、工具、agent 变更与健康心跳不再进入日志。
+0.2 的 `LoggingAudit` 将脱敏后的事件以 JSON 写入 stderr。
+
+- `bazaar-contrib-logging` 订阅 `AUDIT_EVENT`，按事件级别写入现有日志管线，payload 为单行 JSON。
+- provider 在原生收发处保留源事件：连接来源标识、收发顺序、原始 JSON 行与源端时间，先记录再分发与投影；
+  原生进程结束后发布来源关闭与最终序号。Agent 继续发布自身执行与中立输出审计。
+- 凭据字段沿用既有排除规则；审计异常边界保持只隔离事件投递。
+- `AuditEvent` 为 `AuditInfo | AuditFailure`，以 `level` 区分；`publish(..., error=AuditError(kind, message))` 发布失败事件，
+  与 0.2 携带 error_kind 即为 ERROR 一致。logging 对 `AuditFailure` 记 ERROR，其余记 INFO。
+
+验证使用真实 Provider 退出的完整顺序，核对源序号连续、关闭记录齐全、中立输出逐一匹配订阅端记录；
+默认节点启动后 journal 中出现 agent 变更、turn 与工具事件。
+
+### Task 23：消息会话与 bcc 契约
+
+- `bcc message check` 未取满 100 条时把游标推进到全部入站消息的最大 seq，取满时停在本批最后一条，
+  保留 0.2 的返回内容与 seq 语义。
+- bcc 恢复 0.2 错误码与文案：绑定失败与未知 Thread 使用 `SESSION_BINDING_FAILED`／`SESSION_NOT_FOUND`，
+  agent 缺失或未运行使用 `AGENT_REQUIRED`／`AGENT_NOT_AVAILABLE`，意外异常不再带异常类型前缀；
+  插件化新增的服务未就绪情形使用独立错误码。
+- bcc 子进程配置在会话建立时固化：写入当前 sidecar 客户端入口与 `endpoint` 参数，不再加载配置插件与读取 `config.toml`；
+  `TOOL_CONFIG_REQUIRED` 不再出现。
+- `search --sender <id>` 保留 0.2 的 `sender IS NULL` 前提；路由选不到成员时沿用 0.2 的错误文案与回退。
+- Unix socket 端点无人监听时删除残留并重建，有人监听时以 0.2 文案拒绝；父目录不强制 0700。
+  默认端点保持 0.3 的 `sidecar.sock` 与 Windows `bcn-sidecar-<uuid5>`；bcc 中断退出码恢复 1。
+- Windows 管道的 busy 重试由 asyncio `connect_pipe` 提供；0.2 的就绪／停止时限属于其线程实现，0.3 无对应线程。
+  0.2 Windows 的 1 MiB 消息上限无记录依据，与 Unix 的无上限不一致，两平台均保持无上限。
+
+验证使用真实 bcc 调用：unread 超过 100 条时分批取完、不丢消息；配置文件在运行期被改坏后 bcc 仍可用；
+错误码与 `Next action` 逐项对照 0.2 模板。
+
+### Task 24：SQLite 与历史迁移
+
+- 每次打开数据库时，空闲页大于 0 即 VACUUM，再 `wal_checkpoint(TRUNCATE)`；全部在 SQLite 插件内部，不进入公共接口。
+  迁移在各插件 schema 登记中执行，删除表后释放的空间在下次启动回收。
+- 打开数据库的入口使用一个 60 秒预算包住建目录、连接、权限与回收，不逐迁移限时。
+- 退出预算恢复 0.2 的 5 秒。
+- v9 迁移恢复 `schema_migrations` 的 `compaction_completed_at_ms` 加列，保留 0.2 的实际结构与数据变更。
+- v27 合并 DM 时，同一 peer 的多个 handle 取被合并线程的全部游标下限，与 0.2 的实际结果一致。
+- FTS 的 update 触发器限定 `body`、`seq` 两列，与 0.2 一致。
+- 账本按 0.2 校验每个版本的 name，并保留版本连续性检查。
+- 数据库所在的 `.bcn` 目录在每次打开时收紧为 0700。
+
+验证以 0.2 的 SQL 构造 v1…v31 数据库再用本实现升级，与 0.2 自身升级结果逐表逐行比对；
+另用 PyPI 上可取得的 0.1、0.2 发行包创建的真实数据库跑两条升级路径并重启核对业务数据。
+
+### Task 25：命令行、状态与默认组合
+
+- `--config` 与 `--configer-options` 在根命令、命令组与各子命令均可使用；`bcn run --config <路径>` 恢复可用，
+  0.2 安装的 supervisor 启动方式继续成立。
+- `-h` 与 `--help` 等价；无参数执行 `bcn` 的帮助输出与退出码恢复 0.2。
+- V4 读取忽略未知键，`[node.logging]` 表按 0.2 处理；迁移后的 V5 内容保持现有结构。
+- `agent-command` 加入默认组合与 V5 迁移，升级后 `bcn agent` 直接可用。
+- `bcn run` 就绪后输出各插件的状态与结果表格：插件、来源包、状态、结果；失败的插件以独立行展示，
+  不再只输出单行 warning。数据取自生命周期快照，按配置位置对应来源包。
+- `bcn agent list` 输出 Name、Channels、Harnesses、State、Today、Last event；多个 channel 与 harness
+  按配置顺序以逗号连接；失败原因单独一行，对齐 State 列。Today 为 `输入/输出/缓存/$费用`，口径与 bcs 的
+  当日用量一致，provider 未报费用时省略费用段。数据归 `agent` 包新增的 `agent-activity` 插件：
+  订阅审计、只存内存，经 sidecar 开放只读查询，`agent-command` 只调用查询并渲染；节点未运行时 State 为 offline。
+- agent 配置要求至少一个 channel 与一个 harness；agent id 不强制 UUIDv7。
+- 节点健康心跳由 `node-management` 包新增的 `node-health` 插件发布：就绪后每 60 秒一条 `node.health` 审计，
+  经日志订阅写入日志。
+
+验证使用真实安装的 wheel 与 systemd 单元启动，核对 supervisor 命令行、表格输出、`bcn agent` 可用性
+及带未知键的 V4 配置升级。
+
+### Task 26：故障处理与提示词细节
+
+- 失败回复恢复 0.2 的 `Execution failed: {error}` 与 `Execution status is unknown: {error}` 语义，
+  不额外拼接原因码，不把内部异常原文写入聊天；结构化失败继续由审计记录。
+- Codex 回合 interrupted 按 0.2 处理：封禁该 provider 一小时并在有可用 provider 时切换重试。
+- 联系审核通过只唤醒该会话；配置变更不再触发全量 `recover()`。
+- 启动阶段的未读唤醒不依赖 priority 0 provider：有任一可运行的 harness 即开始回合。
+- 单个 Agent 停止时，在途 bcc 与 reminder 命令按 0.2 的 5 秒预算排空，整节点退出继续保持直接取消。
+
+验证使用真实 Channel 与 Agent 安装态场景，核对错误回复文本、provider 切换、审核与配置变更的唤醒范围、
+单 Agent 停止时的命令完成、整节点退出。
+
+### 升级提示（延后）
+
+主体与插件的升级提示在 0.3 发布前统一设计：检查兼容版本范围内的新版本，节点与各插件分别提示，
+保留 `bcc node upgrade`／`bcc node version` 与升级后的汇报提醒。本阶段不实现。
+
+### 系统服务（延后）
+
+`bcn system-service` 与 runtime.env 加载作为独立插件交付，本阶段不实现。
