@@ -1,5 +1,5 @@
-CREATE TRIGGER {{ (operation.index.name ~ "_au") | identifier }}
-AFTER UPDATE ON {{ operation.table | identifier }}
+CREATE TRIGGER {{ (operation.index.name ~ "_update") | identifier }}
+AFTER UPDATE OF {{ ((operation.index.columns | list) + ([operation.index.row_key] if operation.index.row_key else [])) | map("identifier") | join(", ") }} ON {{ operation.table | identifier }}
 BEGIN
     INSERT INTO {{ operation.index.name | identifier }}
         ({{ operation.index.name | identifier }}, rowid, {{ operation.index.columns | map("identifier") | join(", ") }})

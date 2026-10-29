@@ -1,4 +1,4 @@
-CREATE TRIGGER {{ (operation.index.name ~ "_ad") | identifier }}
+CREATE TRIGGER {{ (operation.index.name ~ "_delete") | identifier }}
 AFTER DELETE ON {{ operation.table | identifier }}
 BEGIN
     INSERT INTO {{ operation.index.name | identifier }}

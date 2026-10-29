@@ -18,10 +18,11 @@ from bazaar_contrib_messages import (
 )
 from bazaar_contrib_messages.operations import UnreadMessageOwner
 from bazaar_contrib_schema import SCHEMA
+from bazaar_contrib_sidecar import RemoteEntry
 from bazaar_contrib_storage import DB, Database, Session
 from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import Context, Contrib
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 lazy from bazaar_contrib_channel import Channel
 
 from .attachments import AttachmentMaterializer
@@ -42,6 +43,7 @@ __all__ = [
     "NodeMessages",
     "ThreadLockRegistry",
     "messages",
+    "remote",
 ]
 
 
@@ -111,14 +113,24 @@ class NodeMessages:
             del self._bindings[owner]
             await dispatcher.drain(timeout=shutdown_timeout)
 
+    async def drain(self, owner: Agent, *, timeout: float) -> None:  # noqa: ASYNC109
+        await self._bindings[owner].drain(timeout=timeout)
+
     async def request(self, request: Mapping[str, object]) -> Mapping[str, object]:
-        owner = Agent(_AgentRequest.model_validate(request).agent_id)
+        try:
+            owner = Agent(_AgentRequest.model_validate(request).agent_id)
+        except ValidationError:
+            return {
+                "ok": False,
+                "code": "AGENT_REQUIRED",
+                "error": "agent_id must be a non-empty string",
+            }
         dispatcher = self._bindings.get(owner)
         if dispatcher is None:
             return {
                 "ok": False,
-                "code": "SERVICE_NOT_READY",
-                "error": "command service is not accepting requests",
+                "code": "AGENT_NOT_AVAILABLE",
+                "error": "Agent is not available",
             }
         return await dispatcher(request)
 
@@ -137,3 +149,5 @@ messages = Contrib(
     offers=[MESSAGES],
     lifespan=lifespan,
 )
+
+remote = RemoteEntry(MESSAGES, ("request",))

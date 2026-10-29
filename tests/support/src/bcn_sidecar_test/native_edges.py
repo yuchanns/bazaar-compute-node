@@ -12,7 +12,7 @@ from tempfile import TemporaryDirectory
 
 import tomli_w
 from bazaar_contrib_sidecar.streams import Call, Reply, UnlimitedLineReader
-from bazaar_contrib_sidecar.wire import Atom, Request, Result
+from bazaar_contrib_sidecar.wire import Request, Result
 from installed_smoke import command, node
 
 if sys.platform == "win32":
@@ -57,12 +57,14 @@ async def exercise(directory: Path):
 
     if sys.platform != "win32":
         path = Path(endpoint)
-        for leftover in ("socket", "broken-symlink"):
+        for leftover in ("socket", "broken-symlink", "file"):
             if leftover == "socket":
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                     await asyncio.to_thread(sock.bind, endpoint)
-            else:
+            elif leftover == "broken-symlink":
                 await asyncio.to_thread(path.symlink_to, directory / "missing")
+            else:
+                await asyncio.to_thread(path.write_text, "left by an earlier node")
             async with node(config):
                 await command(config, "remote", "append", f"recovered {leftover}")
 
@@ -107,7 +109,7 @@ async def exercise(directory: Path):
         reader, writer = await connect(endpoint)
         try:
             requests = [
-                Call(request=Request(operation="get", method="name"))
+                Call(request=Request(service="journal", method="tag"))
                 .model_dump_json()
                 .encode()
                 for _ in range(2)
@@ -119,8 +121,7 @@ async def exercise(directory: Path):
             lines = UnlimitedLineReader(reader)
             for _ in range(2):
                 response = Reply.model_validate_json(await lines.readline()).response
-                assert isinstance(response, Result) and isinstance(response.value, Atom)
-                assert "sidecar" in str(response.value.value)
+                assert isinstance(response, Result) and response.value == "journal"
         finally:
             writer.close()
             await writer.wait_closed()

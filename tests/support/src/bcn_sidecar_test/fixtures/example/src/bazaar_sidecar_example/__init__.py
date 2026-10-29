@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+lazy import asyncio
 lazy import json
 
 import click
 from bazaar_contrib_invoke import COMMANDS, CommandEntry
-from bazaar_contrib_sidecar import CLIENT, Symbol
+from bazaar_contrib_sidecar import CLIENT, RemoteEntry
 from bazaar_core import Context, Contrib, EventKey, ServiceKey
 from pydantic import BaseModel
 lazy import aiofiles
 lazy from aiofiles.threadpool.text import AsyncTextIOWrapper
 
 NOTE = EventKey[str]("journal.note")
-JOURNAL = ServiceKey[AsyncTextIOWrapper]("journal.file")
 
 
 class JournalConfig(BaseModel):
@@ -23,23 +23,46 @@ class JournalConfig(BaseModel):
     tag: str = "journal"
 
 
+class Journal:
+    """Write to the journal file directly or through its note event."""
+
+    def __init__(self, ctx: Context, handle: AsyncTextIOWrapper, tag: str) -> None:
+        self.ctx = ctx
+        self.handle = handle
+        self.tag = tag
+
+    async def write(self, text: str) -> None:
+        await self.handle.write(text)
+        await self.handle.flush()
+
+    async def append(self, text: str) -> None:
+        await self.ctx.announce(NOTE, text)
+
+    async def wait(self, delay_ms: int) -> None:
+        try:
+            await asyncio.sleep(delay_ms / 1000)
+        except asyncio.CancelledError:
+            await self.write(f"wait {delay_ms} cancelled\n")
+            raise
+
+
+JOURNAL = ServiceKey[Journal]("journal.file")
+
+
 @asynccontextmanager
 async def journal_lifespan(ctx: Context, config: JournalConfig):
     async with aiofiles.open(config.path, "a", encoding="utf-8") as handle:
-        ctx.offer(JOURNAL, handle)
-        await handle.write(f"{config.tag} started\n")
-        await handle.flush()
+        journal = Journal(ctx, handle, config.tag)
+        ctx.offer(JOURNAL, journal)
+        await journal.write(f"{config.tag} started\n")
         try:
             yield
         finally:
-            await handle.write(f"{config.tag} stopped\n")
-            await handle.flush()
+            await journal.write(f"{config.tag} stopped\n")
 
 
 async def note(ctx: Context, text: str):
-    handle = ctx.accept(JOURNAL)
-    await handle.write(text + "\n")
-    await handle.flush()
+    await ctx.accept(JOURNAL).write(text + "\n")
 
 
 journal = Contrib(
@@ -48,11 +71,12 @@ journal = Contrib(
     lifespan=journal_lifespan,
     listen={NOTE: note},
 )
+remote = RemoteEntry(JOURNAL, ("tag", "write", "append", "wait"))
 
 
 @asynccontextmanager
 async def control_lifespan(ctx: Context):
-    remote = ctx.accept(CLIENT).context
+    client = ctx.accept(CLIENT)
 
     @click.group()
     def command():
@@ -61,19 +85,16 @@ async def control_lifespan(ctx: Context):
     @command.command()
     def refresh():
         async def apply():
-            configuration = await remote.call(
-                "accept", Symbol("bazaar_contrib_config:CONFIGURATION")
-            )
-            _, snapshot = await configuration.call("read")
-            result = await configuration.call("apply", snapshot)
-            click.echo(json.dumps(await result.call("model_dump", mode="json")))
+            _, snapshot = await client.call("configuration", "read")
+            result = await client.call("configuration", "apply", snapshot)
+            click.echo(json.dumps(result))
 
         return apply()
 
     @command.command()
     @click.argument("text")
     def append(text: str):
-        return remote.call("announce", Symbol("bazaar_sidecar_example:NOTE"), text)
+        return client.call("journal", "append", text)
 
     with ctx.accept(COMMANDS).register(command, "remote"):
         yield

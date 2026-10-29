@@ -10,7 +10,7 @@ lazy import json
 lazy import sys
 lazy from typing import Any
 
-from bazaar_contrib_agent import AGENT, Config, compose
+from bazaar_contrib_agent import AGENT, AgentConfig, compose
 from bazaar_contrib_config import (
     CONFIG_PREPARE,
     CONFIG_STORE,
@@ -145,8 +145,15 @@ journal = Contrib(accepts=[AGENT, DIRECTORY], lifespan=journal_lifespan)
 dependent = Contrib(accepts=[MISSING], lifespan=dependent_lifespan)
 
 
+class AgentsConfig(BaseModel):
+    """Agent identities without providers, each journaling into the directory."""
+
+    model_config = ConfigDict(extra="forbid")
+    agents: tuple[AgentConfig, ...] = ()
+
+
 @asynccontextmanager
-async def file_agent_lifespan(ctx: Context, config: Config):
+async def file_agent_lifespan(ctx: Context, config: AgentsConfig):
     async with AsyncExitStack() as stack:
         for item in config.agents:
             composition = compose(item)
@@ -162,7 +169,9 @@ async def file_agent_lifespan(ctx: Context, config: Config):
         yield
 
 
-file_agent = Contrib(config=Config, accepts=[DIRECTORY], lifespan=file_agent_lifespan)
+file_agent = Contrib(
+    config=AgentsConfig, accepts=[DIRECTORY], lifespan=file_agent_lifespan
+)
 
 
 @asynccontextmanager

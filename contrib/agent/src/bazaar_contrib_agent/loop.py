@@ -14,9 +14,8 @@ from time import time_ns
 from typing import cast
 from uuid import UUID, uuid7
 
-from bazaar_contrib_audit import Audit, AuditContext
+from bazaar_contrib_audit import Audit, AuditContext, AuditError
 from bazaar_contrib_channel import (
-    ChannelIdentity,
     ChannelRetryPolicy,
     ChannelSender,
     ChannelSendRequest,
@@ -36,6 +35,10 @@ from bazaar_contrib_harness import (
     ProviderCallStatus,
     SandboxPolicy,
     SessionInput,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
+    TurnStarted,
 )
 from bazaar_contrib_messages import (
     Actor,
@@ -43,6 +46,7 @@ from bazaar_contrib_messages import (
     Messages,
     MessageService,
     Mode,
+    SessionBindingError,
     Thread,
 )
 from bazaar_contrib_messages import Agent as AgentActor
@@ -52,6 +56,7 @@ from bazaar_contrib_messages.models import (
     Message,
     SenderIdentity,
 )
+from bazaar_contrib_messages.results import ThreadNotFoundError
 from bazaar_contrib_messages.states import ChannelTargetKind, MessageDirection, Review
 from bazaar_contrib_reminder import Reminders, resolve_reminder_anchor
 from bazaar_contrib_storage import Column, Compare, Database, Insert, Select, Value
@@ -153,19 +158,19 @@ class AgentLoop:
             if config.session is not None
             else SandboxPolicy.WORKSPACE_WRITE
         )
-        self.channels = Channels(
-            ChannelIdentity(id=agent.id, name=agent.name), channel_order
-        )
+        self.channels = Channels(agent.id, channel_order)
         self.runtimes: dict[str, Runtime] = {}
         self.actor_loops: dict[Actor, ActorLoop] = {}
         self.ingress: dict[Thread, asyncio.Queue[Ingress]] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self.teardowns: set[asyncio.Task[None]] = set()
         self.dispatcher: asyncio.Task[None] | None = None
+        self.draining: asyncio.Task[None] | None = None
         self.bindings = AsyncExitStack()
         self.failure = TaskFailureSignal()
         self.failure.reset()
         self.notified: dict[Thread, int] = {}
+        self.recovered = False
         self.locks: dict[Thread, asyncio.Lock] = {}
         self.service: MessageService
         self.contacts: CollaborationService
@@ -193,23 +198,43 @@ class AgentLoop:
     async def validate_binding(
         self, actor: Actor, request: Mapping[str, object]
     ) -> None:
+        if request.get("agent_id") != self.actors.agent_id:
+            raise SessionBindingError("Agent binding is invalid")
+        if (
+            isinstance(actor, Thread)
+            and await self.messages.storage(
+                AgentActor(self.actors.agent_id)
+            ).get_thread(actor)
+            is None
+        ):
+            raise ThreadNotFoundError(f"unknown thread: {actor.id}")
         loop = self.actor_loops.get(actor)
         binding = (
             None
             if loop is None or isinstance(loop.state, states.Dormant)
             else loop.state.binding
         )
-        if (
-            binding is None
-            or request.get("runtime_session_id") != binding.session.id
-            or not secrets.compare_digest(
-                str(request.get("session_capability", "")), binding.capability
-            )
+        if binding is None or request.get("runtime_session_id") != binding.session.id:
+            raise SessionBindingError("runtime session binding is invalid")
+        capability = request.get("session_capability")
+        if not isinstance(capability, str) or not secrets.compare_digest(
+            capability.encode(), binding.capability.encode()
         ):
-            raise ValueError("The command is not bound to an active runtime session")
+            raise SessionBindingError("session capability is invalid")
 
     async def receive(self, connection: Connection) -> None:
+        await connection.ready.wait()
         async for message in connection.channel.receive():
+            message = message.model_copy(
+                update={
+                    "channel_session_id": self.channels.local_id(
+                        "channel-session", message.channel_session_id
+                    ),
+                    "thread_id": self.channels.local_id(
+                        "bcn-session", message.thread_id
+                    ),
+                }
+            )
             if (
                 self.channels.state is not states.Lifecycle.RUNNING
                 or connection.state is not states.ConnectionState.RUNNING
@@ -320,19 +345,48 @@ class AgentLoop:
         await loop.queue.put(Wakeup(message, runtime, anchor, connection, wake_id))
         return True
 
-    async def recover(self) -> None:
-        if not self.runtimes:
+    async def recover(self, thread: Thread | None = None) -> None:
+        if thread is None and (
+            self.recovered
+            or not any(
+                connection.ready.is_set()
+                for connection in self.channels.connections.values()
+            )
+        ):
             return
+        runtime = self.select()
+        if runtime is None:
+            return
+        if thread is None:
+            self.recovered = True
         for owner in await self.messages.list_unread_message_owners():
             if owner.agent.id != self.agent.id:
                 continue
             message = owner.trigger_message
+            if thread is not None and message.thread_id != thread.id:
+                continue
             if message.seq <= self.notified.get(Thread(message.thread_id), -1):
                 continue
-            await self.wake(message)
+            await self.wake(message, runtime=runtime)
+
+    def drain(self) -> asyncio.Task[None]:
+        # Every agent stopping in one shutdown drains at once instead of one after another.
+        if self.draining is None:
+            self.draining = asyncio.create_task(
+                self.drain_commands(), name=f"agent-drain:{self.agent.id}"
+            )
+        return self.draining
+
+    async def drain_commands(self) -> None:
+        owner = AgentActor(self.agent.id)
+        await asyncio.gather(
+            self.messages.drain(owner, timeout=30),
+            self.reminders.drain(owner, timeout=30),
+        )
 
     async def stop(self) -> None:
         self.channels.state = states.Lifecycle.STOPPING
+        await self.drain()
         self.failure.disable()
         tasks = (
             *self.tasks,
@@ -613,6 +667,11 @@ class AgentLoop:
                 "session": binding.session.model_dump(mode="json"),
                 "failure": asdict(result.failure) if result.failure else None,
             },
+            error=None
+            if result.failure is None
+            else AuditError(
+                kind=result.failure.reason.value, message=result.failure.message
+            ),
         )
 
     async def close_session(self, loop: ActorLoop) -> None:
@@ -669,6 +728,7 @@ class AgentLoop:
                     ),
                     "session_id": session.id,
                 },
+                error=AuditError(kind=type(error).__name__, message=str(error)),
             )
             return
         await self.audit.publish(
@@ -681,6 +741,11 @@ class AgentLoop:
                 "session_id": session.id,
                 "failure": asdict(result.failure) if result.failure else None,
             },
+            error=None
+            if result.failure is None
+            else AuditError(
+                kind=result.failure.reason.value, message=result.failure.message
+            ),
         )
 
     async def background(self, loop: ActorLoop) -> bool:
@@ -1036,10 +1101,12 @@ class AgentLoop:
                         },
                     )
                     continue
-                if event.kind == "started":
+                if isinstance(event.payload, TurnStarted):
                     active.state = states.TurnState.RUNNING
                     loop.state = states.Working(binding)
-                terminal = event.kind in {"completed", "failed", "cancelled"}
+                terminal = isinstance(
+                    event.payload, (TurnCompleted, TurnFailed, TurnCancelled)
+                )
                 await forward(
                     self.audit,
                     active.context,
@@ -1057,25 +1124,29 @@ class AgentLoop:
                 if terminal:
                     active.state = states.TurnState.FINISHED
                     loop.state = (
-                        states.Recovering(binding, event.failure)
-                        if event.failure is not None
-                        and event.failure.needs_reconciliation
-                        and event.failure.reason is not HarnessFailureReason.INTERRUPTED
+                        states.Recovering(binding, event.payload.failure)
+                        if isinstance(event.payload, TurnFailed)
+                        and event.payload.failure.needs_reconciliation
+                        and event.payload.failure.reason
+                        is not HarnessFailureReason.INTERRUPTED
                         else states.Idle(binding)
                     )
                     return event
             outcome = HarnessOutput(
                 session_id=active.session.id,
                 turn_id=active.turn.id,
-                kind="failed",
-                text="runtime stream ended without a terminal event",
-                failure=HarnessFailure(
-                    HarnessFailureReason.CONNECTION_LOST,
-                    "Execution stream ended without a terminal event",
-                    needs_reconciliation=True,
+                payload=TurnFailed(
+                    event_name="runtime stream ended without a terminal event",
+                    failure=HarnessFailure(
+                        HarnessFailureReason.CONNECTION_LOST,
+                        "Execution stream ended without a terminal event",
+                        needs_reconciliation=True,
+                    ),
                 ),
             )
-            loop.state = states.Recovering(binding, outcome.failure)
+            loop.state = states.Recovering(
+                binding, cast(TurnFailed, outcome.payload).failure
+            )
             active.state = states.TurnState.FINISHED
             await forward(
                 self.audit,
@@ -1096,17 +1167,19 @@ class AgentLoop:
                 "harness.stream.closed", context=active.context, payload={}
             )
 
-    async def report_error(self, active: ActiveTurn, outcome: HarnessOutput) -> None:
+    async def report_error(self, active: ActiveTurn, failure: HarnessFailure) -> None:
         from .instruction import template
 
         sender = ChannelSender(
             self.channels, self.timer, policy=ChannelRetryPolicy(timeout=600)
         )
-        failure = cast(HarnessFailure, outcome.failure)
-        code = f" ({failure.code})" if failure.code is not None else ""
-        text = f"{failure.reason.value.replace('_', ' ')}{code}: {failure.message}"
         body = await asyncio.to_thread(
-            lambda: template("runtime_failed.tpl").render(error=text)
+            lambda: template("runtime_failed.tpl").render(
+                error=failure.reason.value
+                if failure.reason is HarnessFailureReason.INTERNAL
+                else failure.message,
+                unknown=failure.needs_reconciliation,
+            )
         )
         for item in active.participants.values():
             try:
@@ -1131,6 +1204,9 @@ class AgentLoop:
                         update={"thread_id": item.message.thread_id}
                     ),
                     payload=receipt.model_dump(mode="json"),
+                    error=None
+                    if receipt.status in {"confirmed", "queued"}
+                    else AuditError(kind=receipt.status),
                 )
             except Exception:
                 logger.exception("runtime error feedback failed")
@@ -1222,6 +1298,8 @@ class AgentLoop:
                 target = routes[message.thread_id][1]
                 approval = ApprovalRoute(
                     self.channels,
+                    connection.kind,
+                    connection.channel.get_identity().id,
                     target,
                     session.id,
                     turn.id,
@@ -1253,12 +1331,15 @@ class AgentLoop:
                         outcome = HarnessOutput(
                             session_id=session.id,
                             turn_id=turn.id,
-                            kind="failed",
-                            failure=loop.state.failure
-                            if isinstance(
-                                loop.state, (states.Recovering, states.Failed)
-                            )
-                            else None,
+                            payload=TurnFailed(
+                                event_name="runtime session failed to start",
+                                failure=cast(
+                                    HarnessFailure,
+                                    cast(
+                                        states.Recovering | states.Failed, loop.state
+                                    ).failure,
+                                ),
+                            ),
                         )
                         await forward(
                             self.audit,
@@ -1295,6 +1376,10 @@ class AgentLoop:
                                             "attempt": unavailable + 1,
                                             "failure": asdict(failure),
                                         },
+                                        error=AuditError(
+                                            kind=failure.reason.value,
+                                            message=failure.message,
+                                        ),
                                     )
                                     if unavailable:
                                         break
@@ -1317,8 +1402,10 @@ class AgentLoop:
                                 outcome = HarnessOutput(
                                     session_id=session.id,
                                     turn_id=turn.id,
-                                    kind="failed",
-                                    failure=failure,
+                                    payload=TurnFailed(
+                                        event_name="runtime turn failed to start",
+                                        failure=cast(HarnessFailure, failure),
+                                    ),
                                 )
                                 await forward(
                                     self.audit,
@@ -1344,8 +1431,10 @@ class AgentLoop:
                                     ):
                                         outcome = outcome.model_copy(
                                             update={
-                                                "failure": state.failure,
-                                                "text": state.failure.message,
+                                                "payload": TurnFailed(
+                                                    event_name="runtime session recovery failed",
+                                                    failure=state.failure,
+                                                )
                                             }
                                         )
                                         await forward(
@@ -1377,15 +1466,20 @@ class AgentLoop:
                                     "error_type": type(error).__name__,
                                     "error_message": str(error),
                                 },
+                                error=AuditError(
+                                    kind=type(error).__name__, message=str(error)
+                                ),
                             )
                             loop.state = states.Idle(binding)
                             outcome = HarnessOutput(
                                 session_id=session.id,
                                 turn_id=turn.id,
-                                kind="failed",
-                                failure=HarnessFailure(
-                                    HarnessFailureReason.INTERNAL,
-                                    str(error) or type(error).__name__,
+                                payload=TurnFailed(
+                                    event_name="runtime turn failed",
+                                    failure=HarnessFailure(
+                                        HarnessFailureReason.INTERNAL,
+                                        str(error) or type(error).__name__,
+                                    ),
                                 ),
                             )
                             await forward(
@@ -1397,45 +1491,47 @@ class AgentLoop:
                                 deliver=False,
                             )
                     active.state = states.TurnState.FINISHED
-                    if outcome.kind == "failed":
-                        failure = cast(HarnessFailure, outcome.failure)
+                    if isinstance(outcome.payload, TurnFailed):
+                        failure = outcome.payload.failure
                         if binding is not None:
+                            failure = replace(
+                                failure,
+                                message=failure.message.replace(
+                                    binding.capability, "<redacted>"
+                                ),
+                                code=failure.code.replace(
+                                    binding.capability, "<redacted>"
+                                )
+                                if isinstance(failure.code, str)
+                                else failure.code,
+                            )
                             outcome = outcome.model_copy(
                                 update={
-                                    "text": outcome.text.replace(
-                                        binding.capability, "<redacted>"
-                                    ),
-                                    "failure": replace(
-                                        failure,
-                                        message=failure.message.replace(
-                                            binding.capability, "<redacted>"
-                                        ),
-                                        code=failure.code.replace(
-                                            binding.capability, "<redacted>"
-                                        )
-                                        if isinstance(failure.code, str)
-                                        else failure.code,
-                                    ),
+                                    "payload": outcome.payload.model_copy(
+                                        update={"failure": failure}
+                                    )
                                 }
                             )
-                        if failure.reason is not HarnessFailureReason.INTERRUPTED:
-                            if not isinstance(loop.state, states.Idle):
-                                await self.close_session(loop)
-                            runtime.banned_until_ms = self.timer.now_ms + 3_600_000
-                            await self.audit.publish(
-                                "harness.pool.banned",
-                                context=context,
-                                payload={
-                                    "ban_until_ms": runtime.banned_until_ms,
-                                    "terminal_state": outcome.kind,
-                                },
-                            )
-                            alternative = self.select(exclude=attempted)
-                            if alternative is not None:
-                                await self.close_session(loop)
-                                runtime = alternative
-                                continue
-                    elif outcome.kind == "completed" and runtime.banned_until_ms:
+                        if not isinstance(loop.state, states.Idle):
+                            await self.close_session(loop)
+                        runtime.banned_until_ms = self.timer.now_ms + 3_600_000
+                        await self.audit.publish(
+                            "harness.pool.banned",
+                            context=context,
+                            payload={
+                                "ban_until_ms": runtime.banned_until_ms,
+                                "terminal_state": outcome.payload.type,
+                            },
+                        )
+                        alternative = self.select(exclude=attempted)
+                        if alternative is not None:
+                            await self.close_session(loop)
+                            runtime = alternative
+                            continue
+                    elif (
+                        isinstance(outcome.payload, TurnCompleted)
+                        and runtime.banned_until_ms
+                    ):
                         runtime.banned_until_ms = 0
                         await self.audit.publish(
                             "harness.pool.released", context=context, payload={}
@@ -1444,8 +1540,8 @@ class AgentLoop:
                         self.channels.accept_turn_event(outcome, target=target)
                     except Exception:
                         logger.exception("channel rejected terminal event")
-                    if outcome.kind == "failed":
-                        await self.report_error(active, outcome)
+                    if isinstance(outcome.payload, TurnFailed):
+                        await self.report_error(active, outcome.payload.failure)
                     return
                 except asyncio.CancelledError:
                     await forward(
@@ -1455,8 +1551,7 @@ class AgentLoop:
                         HarnessOutput(
                             session_id=session.id,
                             turn_id=turn.id,
-                            kind="cancelled",
-                            text="runtime turn cancelled",
+                            payload=TurnCancelled(event_name="runtime turn cancelled"),
                         ),
                         target,
                     )

@@ -11,6 +11,7 @@ lazy from types import SimpleNamespace
 import click
 from bazaar_contrib_invoke import Commands
 lazy from bazaar_contrib_messages import Actor, Actors, Agent, Mode
+lazy from bazaar_contrib_sidecar import RemoteError
 
 lazy from .cli.messages.inbox import inbox
 lazy from .cli.messages.message import message
@@ -46,17 +47,13 @@ async def dispatch(args: Sequence[str], *, prog_name: str | None) -> None:
         if not path:
             return {
                 "ok": False,
-                "code": "TOOL_CONFIG_REQUIRED",
+                "code": "LOCAL_ENDPOINT_REQUIRED",
                 "error": "BCN_TOOL_CONFIG is not set",
             }
         try:
             return await request(Path(path), service, payload)
-        except Exception as error:  # noqa: BLE001 - Preserve the command error envelope for the CLI.
-            return {
-                "ok": False,
-                "code": "COMMAND_FAILED",
-                "error": str(error) or type(error).__name__,
-            }
+        except RemoteError as error:
+            return {"ok": False, "code": "COMMAND_FAILED", "error": error.message}
 
     await commands.dispatch(
         args,
@@ -91,7 +88,8 @@ def main(ctx: click.Context) -> None:
     except click.ClickException:
         raise
     except KeyboardInterrupt:
-        pass
+        click.echo(err=True)
+        ctx.exit(1)
     except Exception as error:
         raise click.ClickException(str(error)) from error
 

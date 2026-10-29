@@ -13,7 +13,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import time_ns
-from typing import Any
+from typing import Any, cast
 from uuid import uuid7
 
 import tomli_w
@@ -21,7 +21,7 @@ from bazaar_compute_node.boot import build
 from bazaar_compute_node.boot import node as application
 from bazaar_contrib_agent.tool import Tool
 from bazaar_contrib_config import CONFIGURATION, ConfigDocument, Configuration
-from bazaar_contrib_sidecar import CLIENT, Client, Construct, Remote, Symbol
+from bazaar_contrib_sidecar import CLIENT, Client
 from bazaar_core import (
     Composition,
     Context,
@@ -135,7 +135,9 @@ async def node(config: Path):
 
 def rows(directory: Path, table: str) -> list[dict[str, Any]]:
     with closing(
-        sqlite3.connect((directory / "node.sqlite3").as_uri() + "?mode=ro", uri=True)
+        sqlite3.connect(
+            (directory / ".bcn" / "node.sqlite3").as_uri() + "?mode=ro", uri=True
+        )
     ) as database:
         database.row_factory = sqlite3.Row
         return [dict(row) for row in database.execute(f"SELECT * FROM {table}")]
@@ -160,14 +162,6 @@ async def events(directory: Path, name: str, *, count: int = 1) -> list[dict[str
         if len(found) >= count:
             return found
         await asyncio.sleep(0.01)
-
-
-def agent(id: str) -> Construct:
-    return Construct("bazaar_contrib_messages:Agent", {"id": id})
-
-
-def thread(id: str) -> Construct:
-    return Construct("bazaar_contrib_messages:Thread", {"id": id})
 
 
 async def bcc(owner: str, actor_id: str, *args: str) -> str:
@@ -232,7 +226,7 @@ async def exercise(directory: Path):
                     for entry, value in (
                         ("commands", {}),
                         ("storage", {}),
-                        ("sqlite", {"path": str(directory / "node.sqlite3")}),
+                        ("sqlite", {"name": "node.sqlite3"}),
                         ("database", {"backend": "sqlite"}),
                         ("schema", {}),
                         ("legacy-node-migrations", {}),
@@ -278,12 +272,6 @@ async def exercise(directory: Path):
             Tool(configurations[0]) as tool,
         ):
             os.environ["BCN_TOOL_CONFIG"] = str(tool.path)
-            reminders: Remote = await clients[0].context.call(
-                "accept", Symbol("bazaar_contrib_reminder:REMINDER")
-            )
-            messages: Remote = await clients[0].context.call(
-                "accept", Symbol("bazaar_contrib_messages:MESSAGES")
-            )
             peers: dict[str, Peer] = {}
             try:
                 for owner in ("Cloud", "Tifa"):
@@ -295,29 +283,33 @@ async def exercise(directory: Path):
                     peers[owner] = Peer(
                         *await asyncio.open_connection("127.0.0.1", address["port"])
                     )
-                yield reminders, messages, peers
+                yield clients[0], peers
             finally:
                 for peer in peers.values():
                     await peer.aclose()
 
     async def command(
-        reminders: Remote, owner: str, actor_id: str, command: str, **values: Any
+        client: Client, owner: str, actor_id: str, command: str, **values: Any
     ) -> dict[str, Any]:
-        response = await reminders.call(
-            "request",
-            {
-                "kind": "command",
-                "resource": "reminder",
-                "command": command,
-                "agent_id": owner,
-                "actor_id": actor_id,
-                **values,
-            },
+        response = cast(
+            dict[str, Any],
+            await client.call(
+                "reminder",
+                "request",
+                {
+                    "kind": "command",
+                    "resource": "reminder",
+                    "command": command,
+                    "agent_id": owner,
+                    "actor_id": actor_id,
+                    **values,
+                },
+            ),
         )
         assert response["ok"], response
         return response["result"]
 
-    async with node(config), control() as (reminders, messages, peers):
+    async with node(config), control() as (reminders, peers):
         cloud_anchor = await peers["Cloud"].inbound(
             "活动材料周一就要交了，请到时提醒我确认讲师介绍。"
         )
@@ -356,23 +348,14 @@ async def exercise(directory: Path):
             reminder["reminder_id"] == first_id and reminder["state"] == "fired"
             for reminder in state
         )
-        storage = await messages.call("storage", agent("Cloud"))
-        system = await storage.call(
-            "get_owned_message",
-            agent("Cloud"),
-            thread(cloud_actor),
-            wakes[-1]["message_id"],
-        )
-        assert await system.get("provider_message_id") is None
-        assert await system.get("notifies_runtime")
-        assert await system.get("seq") > cloud_row["seq"]
-        unread = await messages.call("list_unread_message_owners")
-        assert any(
-            [
-                await (await owner.get("trigger_message")).get("message_id")
-                == wakes[-1]["message_id"]
-                for owner in unread
-            ]
+        system = await received(directory, wakes[-1]["message_id"])
+        assert system["provider_message_id"] is None
+        assert system["notifies_runtime"]
+        assert system["seq"] > cloud_row["seq"]
+        assert all(
+            cursor["delivered_through_seq"] < system["seq"]
+            for cursor in await asyncio.to_thread(rows, directory, "consumer_cursors")
+            if cursor["thread_id"] == cloud_actor
         )
         assert "snoozed" in await bcc(
             "Cloud", cloud_actor, "snooze", "--id", first_id, "--by", "1m"
@@ -483,7 +466,7 @@ async def exercise(directory: Path):
         before = len(await wake_for(directory, first_id, count=2))
         await events(directory, "reminder.fired", count=3)
     await asyncio.sleep(4.1)
-    async with node(config), control() as (reminders, messages, peers):
+    async with node(config), control() as (reminders, peers):
         recovered = await wake_for(directory, offline_id)
         assert recovered[-1]["anchor_message_id"] == tifa_anchor
         assert recovered[-1]["thread_id"] == tifa_row["thread_id"]

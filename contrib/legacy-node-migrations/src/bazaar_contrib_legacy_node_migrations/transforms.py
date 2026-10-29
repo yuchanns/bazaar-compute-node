@@ -673,7 +673,8 @@ async def merge_peer_dms(session: s.Session) -> None:
     for _, _, opened, peer in merges:
         groups.setdefault(peer["id"], []).append(opened["id"])
     for peer, opened in groups.items():
-        threads = (peer, *opened)
+        # 0.2 read one merged row per peer: its first opened thread decides.
+        threads = (peer, opened[0])
         cursors = await session.select(
             s.Select(
                 table="consumer_cursors",

@@ -12,6 +12,13 @@ entry = "agent"
 agents = []
 [[contribs.enabled]]
 entry = "agent-execution"
+[[contribs.enabled]]
+entry = "agent-activity"
+
+[[contribs]]
+package = "bazaar-contrib-agent-command~=0.3.0rc1"
+[[contribs.enabled]]
+entry = "agent-command"
 
 [[contribs]]
 package = "bazaar-contrib-audit~=0.3.0rc1"
@@ -37,6 +44,8 @@ entry = "commands"
 package = "bazaar-contrib-node-management~=0.3.0rc1"
 [[contribs.enabled]]
 entry = "node-management"
+[[contribs.enabled]]
+entry = "node-health"
 
 [[contribs]]
 package = "bazaar-contrib-status~=0.3.0rc1"

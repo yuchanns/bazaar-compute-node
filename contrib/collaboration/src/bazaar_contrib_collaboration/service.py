@@ -5,7 +5,7 @@ from dataclasses import fields, replace
 from time import time_ns
 from typing import cast
 
-from bazaar_contrib_audit import Audit, AuditContext
+from bazaar_contrib_audit import Audit, AuditContext, AuditError
 from bazaar_contrib_channel import ChannelSender, ChannelSendRequest, ChannelTarget
 from bazaar_contrib_messages import (
     Actor,
@@ -78,9 +78,7 @@ class CollaborationService:
             },
             "metadata": dict(metadata or {}),
         }
-        if error_kind is not None:
-            payload["error_kind"] = error_kind.value
-        if error_message is not None:
+        if error_kind is None and error_message is not None:
             payload["error_message"] = error_message
         await self._audit.publish(
             event_name,
@@ -94,6 +92,9 @@ class CollaborationService:
             ),
             payload=TypeAdapter(JsonValue).validate_python(payload),
             occurred_at_ms=at_ms,
+            error=None
+            if error_kind is None
+            else AuditError(kind=error_kind.value, message=error_message),
         )
 
     async def review_contact(

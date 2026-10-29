@@ -12,7 +12,7 @@ from importlib.metadata import distribution
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
-from typing import Any
+from typing import Any, cast
 from uuid import uuid7
 
 import tomli_w
@@ -20,7 +20,8 @@ from bazaar_compute_node.boot import build
 from bazaar_compute_node.boot import node as application
 from bazaar_contrib_agent.tool import Tool
 from bazaar_contrib_config import CONFIGURATION, ConfigDocument, Configuration
-from bazaar_contrib_sidecar import CLIENT, Client, Remote, Symbol
+from bazaar_contrib_sidecar import CLIENT, Client
+from bazaar_contrib_timer import TIMER, Timer
 from bazaar_core import (
     Composition,
     Context,
@@ -143,7 +144,7 @@ class Peer:
 def stored_messages(directory: Path) -> dict[str, dict[str, Any]]:
     with closing(
         sqlite3.connect(
-            (directory / "messages.sqlite3").as_uri() + "?mode=ro", uri=True
+            (directory / ".bcn" / "messages.sqlite3").as_uri() + "?mode=ro", uri=True
         )
     ) as connection:
         connection.row_factory = sqlite3.Row
@@ -227,7 +228,7 @@ async def exercise(directory: Path):
                     for entry, value in (
                         ("commands", {}),
                         ("storage", {}),
-                        ("sqlite", {"path": str(directory / "messages.sqlite3")}),
+                        ("sqlite", {"name": "messages.sqlite3"}),
                         ("database", {"backend": "sqlite"}),
                         ("schema", {}),
                         ("legacy-node-migrations", {}),
@@ -244,18 +245,22 @@ async def exercise(directory: Path):
     )
     clients: list[Client] = []
     configurations: list[Configuration] = []
+    timers: list[Timer] = []
 
     @asynccontextmanager
     async def consumer(ctx: Context):
         clients.append(ctx.accept(CLIENT))
         configurations.append(ctx.accept(CONFIGURATION))
+        timers.append(ctx.accept(TIMER))
         yield
 
     def select(document: ConfigDocument) -> Composition:
         composition = build(document)
         entry = ContribEntry(
             name="rpc-consumer",
-            definition=Contrib(accepts=[CLIENT, CONFIGURATION], lifespan=consumer),
+            definition=Contrib(
+                accepts=[CLIENT, CONFIGURATION, TIMER], lifespan=consumer
+            ),
         )
         return composition.model_copy(
             update={
@@ -270,13 +275,7 @@ async def exercise(directory: Path):
         Tool(configurations[0]) as tool,
     ):
         os.environ["BCN_TOOL_CONFIG"] = str(tool.path)
-        remote: Remote = await clients[0].context.call(
-            "accept", Symbol("bazaar_contrib_messages:MESSAGES")
-        )
-        timer: Remote = await clients[0].context.call(
-            "accept", Symbol("bazaar_contrib_timer:TIMER")
-        )
-        tick_ms = await timer.get("tick_ms")
+        tick_ms = timers[0].tick_ms
         peers: dict[str, Peer] = {}
         for agent in ("Cloud", "Tifa"):
             address = json.loads(
@@ -288,16 +287,20 @@ async def exercise(directory: Path):
             )
 
         async def request(agent: str, resource: str, command: str, **payload):
-            return await remote.call(
-                "request",
-                {
-                    "kind": "command",
-                    "agent_id": agent,
-                    "actor_id": agent,
-                    "resource": resource,
-                    "command": command,
-                    **payload,
-                },
+            return cast(
+                dict[str, Any],
+                await clients[0].call(
+                    "messages",
+                    "request",
+                    {
+                        "kind": "command",
+                        "agent_id": agent,
+                        "actor_id": agent,
+                        "resource": resource,
+                        "command": command,
+                        **payload,
+                    },
+                ),
             )
 
         async def received(agent: str, id: str):
@@ -448,7 +451,7 @@ async def exercise(directory: Path):
                 for packet in peers["Cloud"].deliveries[deliveries:]
             ]
             assert len(set(delivered_ids)) == len(delivered_ids)
-            for sender in ("hanchin", "provider-user-42"):
+            for sender in ("hanchin", "@hanchin"):
                 search = await bcc(
                     directory,
                     "Cloud",

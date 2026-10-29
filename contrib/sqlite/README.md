@@ -1,6 +1,6 @@
 # bazaar-contrib-sqlite
 
-Store node data in SQLite. Enable `storage` and select its `database` entry with `backend = "sqlite"`.
+Store node data in SQLite under `$BCN_HOME/.bcn/`, or `~/.bcn/` when `BCN_HOME` is unset. The file is `bcn.sqlite3` unless `name` sets another. Enable `storage` and select its `database` entry with `backend = "sqlite"`.
 
 ```sh
 bcn contrib add sqlite --enable
@@ -15,6 +15,4 @@ version = "5"
 package = "bazaar-contrib-sqlite~=0.3.0rc1"
 [[contribs.enabled]]
 entry = "sqlite"
-[contribs.enabled.config]
-path = "/path/to/node.db"
 ```

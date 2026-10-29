@@ -14,6 +14,7 @@ lazy from pathlib import Path
 lazy from tempfile import TemporaryDirectory
 lazy from typing import Any
 
+from bazaar_contrib_sidecar import RemoteEntry
 from bazaar_core import ServiceKey
 from pydantic import BaseModel, ConfigDict
 lazy from bazaar_core import (
@@ -423,6 +424,9 @@ class Configuration:
 
 
 CONFIGURATION = ServiceKey[Configuration]("config.configuration")
+remote = RemoteEntry(
+    CONFIGURATION, ("environment", "read", "commit", "commit_preview", "apply")
+)
 
 
 def configuration(

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from uuid import NAMESPACE_URL, uuid5
 lazy import logging
 
 from bazaar_contrib_channel import (
@@ -14,6 +15,7 @@ from bazaar_contrib_channel import (
     ChannelSendPart,
     ChannelSendRequest,
     ChannelTarget,
+    ChannelUnavailableError,
     DmAddress,
     DmRequest,
     InboundMessage,
@@ -35,6 +37,7 @@ class Connection:
     provider: ProviderConfig
     priority: int
     state: states.ConnectionState = states.ConnectionState.RUNNING
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +48,8 @@ class Ingress:
 
 
 class Channels:
-    def __init__(self, identity: ChannelIdentity, order: dict[str, int]):
-        self.identity = identity
+    def __init__(self, agent_id: str, order: dict[str, int]):
+        self.agent_id = agent_id
         self.order = order
         self.connections: dict[str, Connection] = {}
         self.turns: dict[
@@ -57,7 +60,19 @@ class Channels:
         self.pending = 0
 
     def get_identity(self) -> ChannelIdentity:
-        return self.identity
+        return min(
+            (
+                connection
+                for connection in self.connections.values()
+                if connection.state is states.ConnectionState.RUNNING
+            ),
+            key=lambda connection: connection.priority,
+        ).channel.get_identity()
+
+    def local_id(self, kind: str, provider_local_id: str) -> str:
+        return str(
+            uuid5(NAMESPACE_URL, f"bcn:{self.agent_id}:{kind}:{provider_local_id}")
+        )
 
     async def entries(self) -> AsyncIterator[Ingress]:
         while True:
@@ -84,15 +99,62 @@ class Channels:
             raise ValueError(f"Channel is unavailable or ambiguous: {kind}")
         return matches[0]
 
-    def dm_address(self, request: DmRequest) -> DmAddress | None:
+    def backfill_provider_thread_id(
+        self, provider_thread_id: str, *, channel: str, channel_identity: str
+    ) -> str:
         return self.select(
-            request.channel, request.channel_identity
-        ).channel.dm_address(request)
+            channel, channel_identity
+        ).channel.backfill_provider_thread_id(
+            provider_thread_id, channel=channel, channel_identity=channel_identity
+        )
+
+    def dm_address(self, request: DmRequest) -> DmAddress | None:
+        for connection in (
+            [self.select(request.channel, request.channel_identity)]
+            if request.channel_identity is not None
+            else [
+                connection
+                for connection in self.connections.values()
+                if connection.state is states.ConnectionState.RUNNING
+            ]
+        ):
+            address = connection.channel.dm_address(request)
+            if address is None:
+                continue
+            address = address.model_copy(
+                update={
+                    "channel_session_id": self.local_id(
+                        "channel-session", address.channel_session_id
+                    ),
+                    "thread_id": self.local_id("bcn-session", address.thread_id),
+                    "channel_identity": connection.channel.get_identity().id,
+                }
+            )
+            return address
+        return None
 
     async def prepare_send(
         self, request: ChannelSendRequest
     ) -> tuple[ChannelSendPart, ...]:
-        connection = self.select(request.channel, request.channel_identity)
+        connection = next(
+            (
+                connection
+                for connection in self.connections.values()
+                if request.channel_identity is not None
+                and connection.state is not states.ConnectionState.STOPPED
+                and connection.kind == request.channel
+                and connection.channel.get_identity().id == request.channel_identity
+            ),
+            None,
+        )
+        if connection is None:
+            raise ChannelUnavailableError(
+                f"{request.channel} bot {request.channel_identity} is not up"
+                if request.channel_identity is not None
+                else f"conversation {request.actor_id} has no channel here",
+                phase="prepare",
+                delivery="not_sent",
+            )
         if connection.state is states.ConnectionState.DRAINED:
             raise ValueError("Channel is stopping and no longer accepts new sends")
         return await connection.channel.prepare_send(request)
@@ -102,14 +164,9 @@ class Channels:
             event.session_id, event.turn_id
         ].values():
             try:
-                connection.channel.accept_turn_event(
-                    event,
-                    target=ChannelTarget(
-                        kind=destination.kind, thread_id=destination.thread_id
-                    ),
-                )
+                connection.channel.accept_turn_event(event, target=destination)
             except Exception:
-                logger.exception("channel rejected %s", event.kind)
+                logger.exception("channel rejected %s", event.payload.type)
 
     async def request_approval(
         self,
@@ -117,14 +174,20 @@ class Channels:
         *,
         timeout: float,  # noqa: ASYNC109
     ) -> ApprovalResult:
-        for connection, target in self.turns[
-            request.approval.session_id, request.approval.turn_id
-        ].values():
-            if target == request.target:
+        for connection in self.connections.values():
+            if (
+                connection.state is states.ConnectionState.RUNNING
+                and connection.kind == request.channel
+                and connection.channel.get_identity().id == request.channel_identity
+            ):
                 return await connection.channel.request_approval(
                     request, timeout=timeout
                 )
-        raise ValueError("Approval target is not participating in this turn")
+        return ApprovalResult(
+            request_id=request.approval.request_id,
+            decision="rejected",
+            reason="channel_unavailable",
+        )
 
     async def retire(
         self, connection: Connection, timer: Timer, busy: Callable[[], Awaitable[bool]]

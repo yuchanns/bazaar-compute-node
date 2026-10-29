@@ -22,6 +22,7 @@ from bazaar_core import (
     load,
 )
 from bcn_agent_journal import JOURNAL
+from bcn_agent_workbench import configured
 from blockbuster import blockbuster_ctx
 from custom_smoke import exercise as exercise_custom
 from provider_smoke import exercise as exercise_providers
@@ -51,10 +52,14 @@ async def exercise(path: Path):
     project = path / "project"
     await asyncio.to_thread(project.mkdir)
     await asyncio.to_thread((project / "notes.txt").write_text, "persistent project")
+    providers = {
+        "channel": [{"kind": "test-channel"}],
+        "harness": [{"kind": "document"}],
+    }
     config = {
         "agents": [
-            {"id": "Cloud", "name": "Cloud"},
-            {"id": "Tifa", "name": "Tifa", "workspace": str(project)},
+            {"id": "Cloud", "name": "Cloud", **providers},
+            {"id": "Tifa", "name": "Tifa", "workspace": str(project), **providers},
         ]
     }
     # Run the installed entry itself before composing an independent consumer.
@@ -64,9 +69,7 @@ async def exercise(path: Path):
             [
                 ContribSpec(contrib="audit"),
                 ContribSpec(contrib="storage"),
-                ContribSpec(
-                    contrib="sqlite", config={"path": str(path / "agent.sqlite3")}
-                ),
+                ContribSpec(contrib="sqlite", config={"name": "agent.sqlite3"}),
                 ContribSpec(contrib="database", config={"backend": "sqlite"}),
                 ContribSpec(contrib="schema"),
                 ContribSpec(contrib="legacy-node-migrations"),
@@ -74,10 +77,15 @@ async def exercise(path: Path):
                 ContribSpec(contrib="messages-node"),
                 ContribSpec(contrib="collaboration"),
                 ContribSpec(contrib="reminder"),
+                ContribSpec(contrib="channel-builders"),
+                ContribSpec(contrib="harness-builders"),
+                ContribSpec(contrib="test-channel-builder"),
+                ContribSpec(contrib="document-builder"),
                 ContribSpec(contrib="agent-execution"),
                 ContribSpec(contrib="agent", config=config),
             ],
         )
+        composition = await configured(path / "consumer.toml", composition)
         composition = composition.model_copy(
             update={
                 "entries": (
@@ -106,7 +114,7 @@ async def exercise(path: Path):
         [
             ContribSpec(contrib="audit"),
             ContribSpec(contrib="storage"),
-            ContribSpec(contrib="sqlite", config={"path": str(path / "empty.sqlite3")}),
+            ContribSpec(contrib="sqlite", config={"name": "empty.sqlite3"}),
             ContribSpec(contrib="database", config={"backend": "sqlite"}),
             ContribSpec(contrib="schema"),
             ContribSpec(contrib="legacy-node-migrations"),
@@ -144,7 +152,9 @@ async def exercise(path: Path):
     async def control(ctx: Context):
         async with AsyncExitStack() as first, AsyncExitStack() as second:
             for stack, item in zip((first, second), config["agents"]):
-                composition = compose(AgentConfig.model_validate(item))
+                composition = compose(
+                    AgentConfig.model_validate(item | {"channel": [], "harness": []})
+                )
                 journal = await asyncio.to_thread(
                     load, [ContribSpec(contrib="agent-journal")]
                 )
@@ -204,11 +214,11 @@ async def exercise(path: Path):
     report = await asyncio.to_thread((path / "shared.txt").read_text)
     assert "observed Cloud" in report and "observed Tifa" in report
     assert "shared continues" in report and "shared released" in report
-    print("Exercise installed agent providers", flush=True)
+    await asyncio.to_thread(print, "Exercise installed agent providers", flush=True)
     await exercise_providers(path / "providers")
-    print("Exercise custom agent composition", flush=True)
+    await asyncio.to_thread(print, "Exercise custom agent composition", flush=True)
     await exercise_custom(path / "editor")
-    print("Exercise agent process recovery", flush=True)
+    await asyncio.to_thread(print, "Exercise agent process recovery", flush=True)
     await exercise_recovery(path / "recovery")
 
 

@@ -31,6 +31,7 @@ lazy from .loading import (
     ConfigurationEnvironment,
     ConfigurationPreview,
     configuration,
+    remote,
 )
 
 __all__ = [
@@ -62,4 +63,5 @@ __all__ = [
     "FieldChange",
     "PackageRequirement",
     "configuration",
+    "remote",
 ]

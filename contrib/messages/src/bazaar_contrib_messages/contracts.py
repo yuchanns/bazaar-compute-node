@@ -43,6 +43,10 @@ from .states import MessageDirection, Review
 SessionBindingValidator = Callable[[Actor, Mapping[str, object]], Awaitable[None]]
 
 
+class SessionBindingError(ValueError):
+    """A command does not carry its runtime session's binding."""
+
+
 class MessageSession(Protocol):
     """Conversation operations valid within their provider's database scope."""
 
@@ -95,6 +99,14 @@ class MessageStorage(MessageSession, Protocol):
     async def resolve_inbox_target(self, raw_target: str) -> ResolvedInboxTarget: ...
 
     async def find_known_sender(self, token: str) -> KnownSender | None: ...
+
+    async def list_channel_sessions_without_identity(
+        self, channel: str
+    ) -> tuple[ChannelSession, ...]: ...
+
+    async def backfill_channel_identity(
+        self, channel_session_id: str, *, channel_identity: str, provider_thread_id: str
+    ) -> None: ...
 
     async def find_message(
         self,
@@ -217,6 +229,10 @@ class Messages(Protocol):
         shutdown_timeout: float,
         session_binding_validator: SessionBindingValidator | None = None,
     ) -> AbstractAsyncContextManager[MessageService]: ...
+
+    async def drain(self, owner: Agent, *, timeout: float) -> None:  # noqa: ASYNC109
+        """Stop accepting the owner's commands, then cancel any still running at the timeout."""
+        ...
 
     async def request(self, request: Mapping[str, object]) -> Mapping[str, object]: ...
 

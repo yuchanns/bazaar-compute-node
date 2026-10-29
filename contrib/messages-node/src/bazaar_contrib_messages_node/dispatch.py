@@ -9,7 +9,7 @@ from math import ceil
 from time import time_ns
 from typing import Annotated, Literal, Self, cast
 
-from bazaar_contrib_messages import SessionBindingValidator
+from bazaar_contrib_messages import SessionBindingError, SessionBindingValidator
 from bazaar_contrib_messages.actor import Actor, Actors, Thread
 from bazaar_contrib_messages.models import (
     Message,
@@ -370,6 +370,12 @@ class CommandDispatcher:
             return {
                 "ok": False,
                 "code": "SESSION_NOT_FOUND",
+                "error": str(error),
+            }
+        except SessionBindingError as error:
+            return {
+                "ok": False,
+                "code": "SESSION_BINDING_FAILED",
                 "error": str(error),
             }
         except MessageSearchTimeoutError as error:

@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 lazy import logging
 
-from bazaar_contrib_audit import Audit, AuditContext
+from bazaar_contrib_audit import Audit, AuditContext, AuditError
 from bazaar_contrib_channel import (
     Channel,
     ChannelApprovalRequest,
@@ -18,6 +18,8 @@ from bazaar_contrib_harness import (
     ApprovalScope,
     HarnessOutput,
     SandboxPolicy,
+    ToolCallFailed,
+    TurnFailed,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,6 +28,8 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ApprovalRoute:
     channel: Channel
+    channel_kind: str
+    channel_identity: str
     target: ChannelTarget
     session_id: str
     turn_id: str
@@ -42,7 +46,11 @@ class ApprovalRoute:
         timeout: float,  # noqa: ASYNC109
     ) -> ApprovalResult:
         channel_request = ChannelApprovalRequest(
-            approval=request, target=self.target, sender_id=self.sender_id
+            approval=request,
+            target=self.target,
+            sender_id=self.sender_id,
+            channel=self.channel_kind,
+            channel_identity=self.channel_identity,
         )
         await self.audit.publish(
             "approval.requested",
@@ -156,7 +164,7 @@ async def forward(
 ) -> None:
     """Publish turn events and forward them to the channel."""
     await audit.publish(
-        f"harness.{event.kind}",
+        f"harness.{event.payload.type}",
         context=context.model_copy(
             update={
                 key: value
@@ -169,9 +177,17 @@ async def forward(
         ),
         payload=event.model_dump(mode="json"),
         occurred_at_ms=event.occurred_at_ms,
+        error=AuditError(
+            kind=event.payload.failure.reason.value,
+            message=event.payload.failure.message,
+        )
+        if isinstance(event.payload, TurnFailed)
+        else AuditError(kind="tool_call_failed", message=event.payload.error_message)
+        if isinstance(event.payload, ToolCallFailed)
+        else None,
     )
     if deliver:
         try:
             channel.accept_turn_event(event, target=target)
         except Exception:
-            logger.exception("channel rejected %s", event.kind)
+            logger.exception("channel rejected %s", event.payload.type)

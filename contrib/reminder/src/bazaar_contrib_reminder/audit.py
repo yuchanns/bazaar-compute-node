@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import fields
 
-from bazaar_contrib_audit import Audit, AuditContext
+from bazaar_contrib_audit import Audit, AuditContext, AuditError
 from bazaar_contrib_messages import Actor
 from bazaar_contrib_messages.correlation import CorrelationContext
 from bazaar_contrib_messages.states import ErrorKind, RuntimeEventState
@@ -42,9 +42,7 @@ class ReminderAudit:
             },
             "metadata": dict(metadata or {}),
         }
-        if error_kind is not None:
-            payload["error_kind"] = error_kind.value
-        if error_message is not None:
+        if error_kind is None and error_message is not None:
             payload["error_message"] = error_message
         await self._audit.publish(
             event_name,
@@ -58,4 +56,7 @@ class ReminderAudit:
             ),
             payload=TypeAdapter(JsonValue).validate_python(payload),
             occurred_at_ms=at_ms,
+            error=None
+            if error_kind is None
+            else AuditError(kind=error_kind.value, message=error_message),
         )

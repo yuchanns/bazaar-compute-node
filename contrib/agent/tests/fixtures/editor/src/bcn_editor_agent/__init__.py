@@ -29,6 +29,9 @@ from bazaar_contrib_harness import (
     HarnessSession,
     HarnessTurn,
     SessionInput,
+    TurnCancelled,
+    TurnCompleted,
+    TurnFailed,
 )
 from bazaar_contrib_messages import MESSAGES, Actor, Actors, Mode, Thread
 from bazaar_contrib_messages.models import Message, SenderIdentity
@@ -205,12 +208,9 @@ async def process(ctx: Context, config: Input):
                 try:
                     async for event in stream:
                         channel.accept_turn_event(event, target=inbound.target)
-                        if event.kind in {
-                            "completed",
-                            "failed",
-                            "cancelled",
-                            "unknown",
-                        }:
+                        if isinstance(
+                            event.payload, (TurnCompleted, TurnFailed, TurnCancelled)
+                        ):
                             break
                 finally:
                     await stream.aclose()

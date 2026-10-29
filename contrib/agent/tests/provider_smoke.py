@@ -22,7 +22,13 @@ from bazaar_contrib_channel import (
     ChannelTargetPresentation,
     SenderIdentity,
 )
-from bazaar_contrib_harness import ApprovalResult, HarnessOutput
+from bazaar_contrib_harness import (
+    ApprovalResult,
+    ContentDelta,
+    HarnessOutput,
+    ToolCallCompleted,
+    TurnFailed,
+)
 from bazaar_core import (
     CONTRIB_CHANGED,
     Blocked,
@@ -43,6 +49,7 @@ from bcn_agent_workbench import (
     read_context_cache,
 )
 from bcn_agent_workbench import ChannelMessage as InboundMessage
+from pydantic import TypeAdapter
 
 from bazaar_contrib_agent import AGENTS, AgentInstances
 
@@ -71,11 +78,9 @@ class Peer:
                         },
                     }
                 )
-            if field == "approval" and packet.get("event", {}).get("kind") in {
-                "failed",
-                "unknown",
-                "cancelled",
-            }:
+            if field == "approval" and packet.get("event", {}).get("payload", {}).get(
+                "type"
+            ) in {"failed", "cancelled"}:
                 raise RuntimeError(f"Turn ended before approval: {packet}")
             if field in packet:
                 return packet
@@ -127,9 +132,9 @@ async def submit(
             packet = await peer.until("event")
             peer.events.append(packet)
             event = HarnessOutput.model_validate(packet["event"])
-            if event.kind == "completed":
+            if event.payload.type == "completed":
                 return message, packet
-            if event.kind in {"failed", "unknown", "cancelled"}:
+            if event.payload.type in {"failed", "cancelled"}:
                 raise RuntimeError(f"Document task ended before its report: {packet}")
     packet = await peer.until("approval")
     approval = ChannelApprovalRequest.model_validate(packet["approval"])
@@ -146,9 +151,9 @@ async def finish(peer: Peer, packet: dict[str, Any] | None = None) -> Path:
             while True:
                 packet = await peer.until("event")
                 peer.events.append(packet)
-                if packet["event"]["kind"] == "completed":
+                if packet["event"]["payload"]["type"] == "completed":
                     break
-                if packet["event"]["kind"] in {"failed", "unknown", "cancelled"}:
+                if packet["event"]["payload"]["type"] in {"failed", "cancelled"}:
                     raise RuntimeError(
                         f"Document task ended before its report: {packet}"
                     )
@@ -157,10 +162,10 @@ async def finish(peer: Peer, packet: dict[str, Any] | None = None) -> Path:
     if "event" in packet:
         return Path(
             next(
-                item["event"]["metadata"]["path"]
+                item["event"]["payload"]["call"]["input"]["path"]
                 for item in reversed(peer.events)
                 if item.get("event", {}).get("turn_id") == packet["event"]["turn_id"]
-                and item["event"]["metadata"].get("name") == "file.write"
+                and item["event"]["payload"].get("call", {}).get("name") == "file.write"
             )
         )
     approval = ChannelApprovalRequest.model_validate(packet["approval"])
@@ -179,9 +184,9 @@ async def finish(peer: Peer, packet: dict[str, Any] | None = None) -> Path:
         event = HarnessOutput.model_validate(packet["event"])
         assert event.session_id == approval.approval.session_id
         assert event.turn_id == approval.approval.turn_id
-        if event.kind == "text":
-            assert path.name in event.text
-        elif event.kind == "completed":
+        if isinstance(event.payload, ContentDelta):
+            assert path.name in event.payload.text
+        elif event.payload.type == "completed":
             break
     return path
 
@@ -225,8 +230,10 @@ async def session_routes(peer: Peer, draft: Path, workspace: Path) -> Path:
             assert data["context"]["actor_id"] == data["agent_id"]
         else:
             assert data["context"]["actor_id"] != data["agent_id"]
-    assert {"started", "text", "completed"} <= {
-        packet["event"]["kind"] for packet in peer.events if "event" in packet
+    assert {"started", "content.delta", "completed"} <= {
+        packet["event"]["payload"]["type"]
+        for packet in peer.events
+        if "event" in packet
     }
     return first.parent
 
@@ -249,7 +256,7 @@ async def turn_failure(peer: Peer, draft: Path, session: Path):
         packet = await peer.until("event")
         peer.events.append(packet)
         event = HarnessOutput.model_validate(packet["event"])
-        if event.kind == "failed":
+        if event.payload.type == "failed":
             assert packet["target"]["thread_id"] == message.target.thread_id
             break
     saved = await report(peer, draft)
@@ -511,11 +518,12 @@ async def steering(peer: Peer, draft: Path, persisted: asyncio.Queue[AuditEvent]
     while True:
         packet = await peer.until("event")
         peer.events.append(packet)
-        if packet["event"]["kind"] == "inbox.checked":
+        if packet["event"]["provider_event"] == "inbox.checked":
             event = HarnessOutput.model_validate(packet["event"])
+            assert isinstance(event.payload, ToolCallCompleted)
             assert event.turn_id == approval["approval"]["approval"]["turn_id"]
             assert all(
-                update.body in str(event.metadata["messages"]) for update in updates
+                update.body in str(event.payload.call.output) for update in updates
             )
             break
     entries = [
@@ -530,10 +538,12 @@ async def steering(peer: Peer, draft: Path, persisted: asyncio.Queue[AuditEvent]
     terminal = next(
         packet
         for packet in reversed(peer.events)
-        if packet.get("event", {}).get("kind") == "completed"
+        if packet.get("event", {}).get("payload", {}).get("type") == "completed"
         and packet["event"]["turn_id"] == approval["approval"]["approval"]["turn_id"]
     )
-    assert ChannelTarget.model_validate(terminal["target"]) == first.target
+    assert ChannelTarget.model_validate(terminal["target"]) == first.target.model_copy(
+        update={"reply_to_message_id": first.id}
+    )
     # A replay and then another request still answer the new request's identity.
     await peer.write({"inbound": first.model_dump(mode="json")})
     continued = await report(peer, draft)
@@ -575,16 +585,17 @@ async def runtime_failures(peer: Peer, draft: Path):
                     next(
                         item["event"]
                         for item in reversed(peer.events)
-                        if item.get("event", {}).get("kind") == "failed"
+                        if item.get("event", {}).get("payload", {}).get("type")
+                        == "failed"
                     )
                 )
-                assert terminal.failure is not None
-                assert terminal.failure.message in feedback["outbound"]["body"]
+                assert isinstance(terminal.payload, TurnFailed)
+                assert terminal.payload.failure.message in feedback["outbound"]["body"]
                 assert all(
                     part in feedback["outbound"]["body"]
                     for part in conflicts[-1].parts[-2:]
                 )
-                assert terminal.failure.code is not None
+                assert terminal.payload.failure.code is not None
         finally:
             for path in conflicts:
                 await asyncio.to_thread(path.rmdir)
@@ -621,9 +632,7 @@ async def exercise(path: Path):
                 config={"endpoint": endpoint},
             ),
             ContribSpec(contrib="storage"),
-            ContribSpec(
-                contrib="sqlite", config={"path": str(path / "providers.sqlite3")}
-            ),
+            ContribSpec(contrib="sqlite", config={"name": "providers.sqlite3"}),
             ContribSpec(contrib="database", config={"backend": "sqlite"}),
             ContribSpec(contrib="schema"),
             ContribSpec(contrib="legacy-node-migrations"),
@@ -736,7 +745,7 @@ async def exercise(path: Path):
                 await inbound_context(
                     connected["Cloud"],
                     drafts["Cloud"],
-                    path / "providers.sqlite3",
+                    Path(os.environ["BCN_HOME"]) / ".bcn" / "providers.sqlite3",
                     persisted,
                 )
                 for name, peer in connected.items():
@@ -746,7 +755,7 @@ async def exercise(path: Path):
                             peer,
                             drafts[name],
                             session,
-                            path / "providers.sqlite3",
+                            Path(os.environ["BCN_HOME"]) / ".bcn" / "providers.sqlite3",
                             persisted,
                         )
                     await turn_failure(peer, drafts[name], session)
@@ -777,14 +786,14 @@ async def exercise(path: Path):
                 while True:
                     packet = await connected["Cloud"].until("event")
                     connected["Cloud"].events.append(packet)
-                    if packet["event"]["kind"] == "completed":
+                    if packet["event"]["payload"]["type"] == "completed":
                         break
                 ending = packet["event"]["turn_id"]
                 assert any(
-                    "declined" in item["event"]["text"]
+                    "declined" in item["event"]["payload"]["text"]
                     for item in connected["Cloud"].events
                     if item.get("event", {}).get("turn_id") == ending
-                    and item["event"]["kind"] == "text"
+                    and item["event"]["payload"]["type"] == "content.delta"
                 )
                 await steering(connected["Cloud"], drafts["Cloud"], persisted)
 
@@ -1175,9 +1184,12 @@ async def exercise(path: Path):
                 await connected["Tifa"].until("outbound", acknowledge=False)
                 other_path = Path(
                     next(
-                        packet["event"]["metadata"]["path"]
+                        packet["event"]["payload"]["call"]["input"]["path"]
                         for packet in reversed(connected["Tifa"].events)
-                        if packet.get("event", {}).get("metadata", {}).get("name")
+                        if packet.get("event", {})
+                        .get("payload", {})
+                        .get("call", {})
+                        .get("name")
                         == "file.write"
                     )
                 )
@@ -1185,7 +1197,7 @@ async def exercise(path: Path):
                 remaining = await peer.reader.read()
                 peer.events.extend(json.loads(line) for line in remaining.splitlines())
             assert any(
-                packet["event"]["kind"] == "cancelled"
+                packet["event"]["payload"]["type"] == "cancelled"
                 for packet in connected["Cloud"].events
                 if "event" in packet
             )
@@ -1199,7 +1211,7 @@ async def exercise(path: Path):
     assert await asyncio.to_thread((idle_workspace / "channel.closed").read_text)
     assert await asyncio.to_thread((workspaces["Cloud"] / "secondary.closed").read_text)
     async with aiofiles.open(path / "audit.jsonl") as stream:
-        records = [AuditEvent.model_validate_json(line) async for line in stream]
+        records = [TypeAdapter(AuditEvent).validate_json(line) async for line in stream]
     assert {"Cloud", "Tifa", "Barret"} <= {event.context.agent_id for event in records}
     requests = {
         event.context.turn_id: event
@@ -1215,18 +1227,20 @@ async def exercise(path: Path):
                 and event.event_name == "harness.tool.completed"
             ):
                 output = HarnessOutput.model_validate(event.payload)
-                if output.metadata.get("name") == "file.read":
+                assert isinstance(output.payload, ToolCallCompleted)
+                if output.payload.call.name == "file.read":
                     reads.append((event, output))
         assert reads
         for event, output in reads:
-            assert output.metadata["result"] == content
-            raw = HarnessOutput.model_validate(output.raw)
-            assert raw.metadata["result"] == content
-            assert raw.occurred_at_ms == event.occurred_at_ms
+            assert isinstance(output.payload, ToolCallCompleted)
+            assert output.payload.call.output == content
+            raw = cast(dict[str, Any], output.raw)
+            assert raw["metadata"]["result"] == content
+            assert raw["occurred_at_ms"] == event.occurred_at_ms
             assert output.session_id == event.context.session_id
             assert output.turn_id == event.context.turn_id
     for event in records:
-        if event.event_name == "harness.text":
+        if event.event_name == "harness.content.delta":
             request = requests[event.context.turn_id]
             assert event.run_id == request.run_id
             assert event.sequence > request.sequence

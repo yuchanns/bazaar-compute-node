@@ -1,4 +1,4 @@
-CREATE TRIGGER {{ (operation.index.name ~ "_ai") | identifier }}
+CREATE TRIGGER {{ (operation.index.name ~ "_insert") | identifier }}
 AFTER INSERT ON {{ operation.table | identifier }}
 BEGIN
     INSERT INTO {{ operation.index.name | identifier }}

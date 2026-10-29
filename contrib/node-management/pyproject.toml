@@ -9,11 +9,15 @@ dependencies = [
     "bazaar-core~=0.3.0rc1",
     "bazaar-contrib-config~=0.3.0rc1",
     "bazaar-contrib-invoke~=0.3.0rc1",
+    "bazaar-contrib-audit~=0.3.0rc1",
+    "bazaar-contrib-timer~=0.3.0rc7",
+    "packaging>=26.0",
     "click>=8.1.0",
 ]
 
 [project.entry-points."bazaar_compute_node.contribs"]
 node-management = "bazaar_contrib_node_management:management"
+node-health = "bazaar_contrib_node_management:node_health"
 
 [project.entry-points."bazaar_compute_node.commands"]
 run = "bazaar_contrib_node_management:command_entry"

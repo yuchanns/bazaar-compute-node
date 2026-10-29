@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 lazy import asyncio
-lazy from pathlib import Path
 
 import pytest
 from bazaar_contrib_storage import (
@@ -23,7 +22,7 @@ from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribHub
 from bazaar_contrib_sqlite import sqlite
 
 
-async def test_consumer_roots_select_and_close_sqlite_dependencies(tmp_path: Path):
+async def test_consumer_roots_select_and_close_sqlite_dependencies():
     services: list[Database] = []
     ready = asyncio.Event()
 
@@ -56,7 +55,6 @@ async def test_consumer_roots_select_and_close_sqlite_dependencies(tmp_path: Pat
             ContribEntry(
                 name="sqlite",
                 definition=sqlite,
-                config={"path": tmp_path / "selected.sqlite3"},
             ),
             ContribEntry(
                 name="database", definition=database, config={"backend": "sqlite"}
@@ -82,7 +80,7 @@ async def test_consumer_roots_select_and_close_sqlite_dependencies(tmp_path: Pat
             await services[0].select(Select(table="notes"))
 
 
-async def test_writer_loss_releases_consumers_and_closes_database(tmp_path: Path):
+async def test_writer_loss_releases_consumers_and_closes_database():
     from bazaar_core import CONTRIB_CHANGED, ContribChange, Failed
 
     services: list[Database] = []
@@ -114,7 +112,6 @@ async def test_writer_loss_releases_consumers_and_closes_database(tmp_path: Path
                     ContribEntry(
                         name="sqlite",
                         definition=sqlite,
-                        config={"path": tmp_path / "failure.sqlite3"},
                     ),
                     ContribEntry(
                         name="database",

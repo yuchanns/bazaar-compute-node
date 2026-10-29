@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 lazy import asyncio
-lazy from pathlib import Path
 
 import pytest
 from bazaar_contrib_storage import (
@@ -26,12 +25,8 @@ from workflow import migration_workflow, workflow
 from bazaar_contrib_sqlite import SqliteConfig, open_database
 
 
-async def test_ordinary_data_queries_search_and_transaction(
-    tmp_path: Path, timer: Timer
-):
-    async with open_database(
-        SqliteConfig(path=tmp_path / "notes.sqlite3"), timer=timer
-    ) as database:
+async def test_ordinary_data_queries_search_and_transaction(timer: Timer):
+    async with open_database(SqliteConfig(), timer=timer) as database:
         await workflow(database)
         await migration_workflow(database)
 
@@ -54,15 +49,11 @@ async def counter(database: Database):
     await database.insert(Insert(table="counter", rows=({"id": 1, "value": 0},)))
 
 
-async def test_snapshot_reader_keeps_its_view_while_a_writer_commits(
-    tmp_path: Path, timer: Timer
-):
+async def test_snapshot_reader_keeps_its_view_while_a_writer_commits(timer: Timer):
     started = asyncio.Event()
     committed = asyncio.Event()
     async with (
-        open_database(
-            SqliteConfig(path=tmp_path / "snapshot.sqlite3"), timer=timer
-        ) as database,
+        open_database(SqliteConfig(), timer=timer) as database,
     ):
         await counter(database)
 
@@ -85,10 +76,8 @@ async def test_snapshot_reader_keeps_its_view_while_a_writer_commits(
         assert (await database.select(Select(table="counter")))[0]["value"] == 7
 
 
-async def test_concurrent_writes_and_integrity_rollback(tmp_path: Path, timer: Timer):
-    async with open_database(
-        SqliteConfig(path=tmp_path / "counter.sqlite3", max_readers=2), timer=timer
-    ) as database:
+async def test_concurrent_writes_and_integrity_rollback(timer: Timer):
+    async with open_database(SqliteConfig(max_readers=2), timer=timer) as database:
         await counter(database)
 
         async def increment(session: Session):
@@ -122,14 +111,10 @@ async def test_concurrent_writes_and_integrity_rollback(tmp_path: Path, timer: T
         assert (await database.select(Select(table="counter")))[0]["value"] == 40
 
 
-async def test_cancelled_transaction_rolls_back_and_releases_writer(
-    tmp_path: Path, timer: Timer
-):
+async def test_cancelled_transaction_rolls_back_and_releases_writer(timer: Timer):
     started = asyncio.Event()
     sessions: list[Session] = []
-    async with open_database(
-        SqliteConfig(path=tmp_path / "cancel.sqlite3"), timer=timer
-    ) as database:
+    async with open_database(SqliteConfig(), timer=timer) as database:
         await counter(database)
 
         async def hold(session: Session):
@@ -153,12 +138,10 @@ async def test_cancelled_transaction_rolls_back_and_releases_writer(
         await database.select(Select(table="counter"))
 
 
-async def test_lifecycle_drains_accepted_writes(tmp_path: Path, timer: Timer):
+async def test_lifecycle_drains_accepted_writes(timer: Timer):
     started = asyncio.Event()
     release = asyncio.Event()
-    async with open_database(
-        SqliteConfig(path=tmp_path / "drain.sqlite3"), timer=timer
-    ) as database:
+    async with open_database(SqliteConfig(), timer=timer) as database:
         await counter(database)
 
         async def write(session: Session):
@@ -172,9 +155,7 @@ async def test_lifecycle_drains_accepted_writes(tmp_path: Path, timer: Timer):
         await started.wait()
         asyncio.get_running_loop().call_soon(release.set)
     await task
-    async with open_database(
-        SqliteConfig(path=tmp_path / "drain.sqlite3"), timer=timer
-    ) as reopened:
+    async with open_database(SqliteConfig(), timer=timer) as reopened:
         rows = await reopened.select(
             Select(
                 table="counter",
@@ -186,13 +167,11 @@ async def test_lifecycle_drains_accepted_writes(tmp_path: Path, timer: Timer):
         assert rows[0]["value"] == 8
 
 
-async def test_cancelled_expensive_read_releases_a_single_reader(
-    tmp_path: Path, timer: Timer
-):
+async def test_cancelled_expensive_read_releases_a_single_reader(timer: Timer):
     from bazaar_contrib_storage import All, Call, Join
 
     async with open_database(
-        SqliteConfig(path=tmp_path / "read.sqlite3", max_idle_readers=1, max_readers=1),
+        SqliteConfig(max_idle_readers=1, max_readers=1),
         timer=timer,
     ) as database:
         await database.apply_schema(

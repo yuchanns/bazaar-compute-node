@@ -19,6 +19,7 @@ lazy from logging.handlers import QueueListener
 lazy from queue import Queue
 lazy from uuid import uuid7
 
+from bazaar_contrib_audit import AUDIT_EVENT, AuditEvent, AuditFailure
 from bazaar_core import Contrib
 from concurrent_log_handler import ConcurrentTimedRotatingFileHandler
 from pydantic import BaseModel, ByteSize, ConfigDict, Field
@@ -253,4 +254,14 @@ async def _logging(ctx: Context, config: LoggingConfig) -> AsyncIterator[None]:
                 await _finish(handler.close)
 
 
-logging = Contrib(config=LoggingConfig, lifespan=_logging)
+async def _audit(ctx: Context, event: AuditEvent) -> None:
+    stdlib.getLogger("bazaar_compute_node.audit").log(
+        stdlib.ERROR if isinstance(event, AuditFailure) else stdlib.INFO,
+        "%s",
+        json.dumps(
+            event.model_dump(mode="json"), separators=(",", ":"), sort_keys=True
+        ),
+    )
+
+
+logging = Contrib(config=LoggingConfig, lifespan=_logging, listen={AUDIT_EVENT: _audit})

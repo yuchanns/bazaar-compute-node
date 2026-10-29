@@ -9,11 +9,11 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
+from .events import HarnessOutput
 from .models import (
     ApprovalRequest,
     ApprovalResult,
     HarnessExpire,
-    HarnessOutput,
     HarnessSession,
     HarnessTurn,
     SessionInput,

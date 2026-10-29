@@ -7,13 +7,15 @@ import importlib
 import json
 import os
 import signal
+import sqlite3
 import sys
 import tomllib
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager, closing
 from pathlib import Path
+from typing import Any
 
 from bazaar_contrib_config_filesystem import FileConfigStore
-from bazaar_contrib_sidecar import CLIENT, Client, Construct, Symbol
+from bazaar_contrib_sidecar import CLIENT, Client
 from bazaar_core import (
     Context,
     Contrib,
@@ -30,7 +32,7 @@ async def exercise(path: Path, source: str, tests: Path):
     os.environ["EDITOR_SOURCE"] = "Weekend editor"
 
     async def cli(*arguments: str):
-        print("bcn --config", config, *arguments, flush=True)
+        await asyncio.to_thread(print, "bcn --config", config, *arguments, flush=True)
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -43,7 +45,9 @@ async def exercise(path: Path, source: str, tests: Path):
         )
         try:
             output, errors = await process.communicate()
-            print((output + errors).decode(), end="", flush=True)
+            await asyncio.to_thread(
+                print, (output + errors).decode(), end="", flush=True
+            )
             assert process.returncode == 0, (output + errors).decode()
             if "--help" not in arguments and (
                 arguments[:2]
@@ -88,9 +92,7 @@ async def exercise(path: Path, source: str, tests: Path):
         if entry["entry"] == "contrib-manager"
     )
     await cli("contrib", "edit", str(index), "--option", f"host_source={source}")
-    await cli(
-        "contrib", "add", "bazaar-contrib-agent-command", "--source", source, "--enable"
-    )
+    # The default composition already offers the agent commands.
     assert "No agents" in await cli("agent", "list")
     await cli(
         "contrib",
@@ -186,6 +188,7 @@ async def exercise(path: Path, source: str, tests: Path):
     assert updated[0]["harness"][0]["env"] == {"EDITOR_NAME": "EDITOR_SOURCE"}
     listing = await cli("agent", "list")
     assert "Cloud desk" in listing and "Tifa" in listing
+    assert "offline" in listing
     assert not await asyncio.to_thread((path / "Cloud").exists)
     assert not await asyncio.to_thread((path / "Tifa").exists)
     await asyncio.to_thread(
@@ -252,32 +255,41 @@ async def exercise(path: Path, source: str, tests: Path):
         async with ContribHub() as hub, hub.enable(composition):
             yield clients[0]
 
-    async def contacts(owner: str, state: str | None = None):
-        async with control() as client:
-            collaboration = await client.context.call(
-                "accept", Symbol("bazaar_contrib_collaboration:COLLABORATION")
-            )
-            owner_ref = Construct("bazaar_contrib_messages:Agent", {"id": owner})
-            service = await collaboration.call("for_agent", owner_ref)
-            messages = await service.get("messages")
-            inbox = await messages.call(
-                "check_inbox",
-                owner_ref,
-                pending_only=False,
-                limit=None,
-                review=Construct(
-                    "bazaar_contrib_messages.states:Review", {"value": state}
-                )
-                if state
-                else None,
-            )
-            return [
-                {
-                    key: await row.get(key)
-                    for key in ("thread_id", "review", "latest_message_id")
-                }
-                for row in await inbox.get("targets")
-            ]
+    def select(query: str, *args: object) -> list[dict[str, Any]]:
+        database = path / ".bcn" / "bcn.sqlite3"
+        with closing(
+            sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+        ) as connection:
+            connection.row_factory = sqlite3.Row
+            return [dict(row) for row in connection.execute(query, args)]
+
+    async def contacts(owner: str, state: str | None = None) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            select,
+            "SELECT thread.id AS thread_id, session.review AS review "
+            "FROM threads AS thread JOIN channel_sessions AS session "
+            "ON session.id = thread.channel_session_id "
+            "WHERE session.agent_id = ? AND (? IS NULL OR session.review = ?) "
+            "ORDER BY thread.created_at_ms",
+            owner,
+            state,
+            state,
+        )
+
+    async def notifies_runtime(message_id: str) -> int | None:
+        found = await asyncio.to_thread(
+            select,
+            "SELECT notifies_runtime FROM messages WHERE provider_message_id = ?",
+            message_id,
+        )
+        return found[0]["notifies_runtime"] if found else None
+
+    async def restarted(name: str, before: int) -> None:
+        endpoint = path / name / "channel.json"
+        while True:
+            if (await asyncio.to_thread(endpoint.stat)).st_mtime_ns != before:
+                return
+            await asyncio.sleep(0.01)
 
     async def pending(owner: str):
         while True:
@@ -327,13 +339,8 @@ async def exercise(path: Path, source: str, tests: Path):
     async with running(), AsyncExitStack() as stack:
         peer = await connect("Cloud")
         stack.push_async_callback(peer.aclose)
-        async with control() as client:
-            management = await client.context.call(
-                "accept", Symbol("bazaar_contrib_agent_command:AGENT_CONFIGURATION")
-            )
-            snapshot = await management.call("read")
-            saved = await snapshot.get("agents")
-            assert [await item.get("id") for item in saved] == [cloud["id"], tifa["id"]]
+        assert [item["id"] for item in await agents()] == [cloud["id"], tifa["id"]]
+        assert "running" in await cli("agent", "list")
         await peer.write({"inbound": request.model_dump(mode="json")})
         row = await pending(cloud["id"])
         assert row["thread_id"] in await cli("agent", "review", "list", cloud["id"])
@@ -369,21 +376,8 @@ async def exercise(path: Path, source: str, tests: Path):
         await tifa_peer.write({"inbound": shared.model_dump(mode="json")})
         shared_row = await pending(tifa["id"])
         async with control() as client:
-            collaboration = await client.context.call(
-                "accept", Symbol("bazaar_contrib_collaboration:COLLABORATION")
-            )
-            service = await collaboration.call(
-                "for_agent",
-                Construct("bazaar_contrib_messages:Agent", {"id": tifa["id"]}),
-            )
-            await service.call(
-                "review_contact",
-                Construct(
-                    "bazaar_contrib_messages:Thread", {"id": shared_row["thread_id"]}
-                ),
-                Construct(
-                    "bazaar_contrib_messages.states:Review", {"value": "approved"}
-                ),
+            await client.call(
+                "collaboration", "review_contact", shared_row["thread_id"], "approved"
             )
         shared_report = await finish(tifa_peer)
         data = json.loads(await asyncio.to_thread(shared_report.read_text))
@@ -426,39 +420,12 @@ async def exercise(path: Path, source: str, tests: Path):
             }
         )
         await cloud_peer.write({"inbound": quiet.model_dump(mode="json")})
-        async with control() as client:
-            collaboration = await client.context.call(
-                "accept", Symbol("bazaar_contrib_collaboration:COLLABORATION")
-            )
-            service = await collaboration.call(
-                "for_agent",
-                Construct("bazaar_contrib_messages:Agent", {"id": cloud["id"]}),
-            )
-            messages = await service.get("messages")
-            storage = await messages.get("storage")
-            direction = Construct(
-                "bazaar_contrib_messages.states:MessageDirection", {"value": "inbound"}
-            )
-            while True:
-                preserved = await storage.call(
-                    "find_message",
-                    "test-channel",
-                    quiet.target.thread_id,
-                    quiet.id,
-                    direction=direction,
-                )
-                if preserved is not None:
-                    break
-                await asyncio.sleep(0.01)
-            await cli("agent", "review", "approve", denied_row["thread_id"])
-            preserved = await storage.call(
-                "find_message",
-                "test-channel",
-                quiet.target.thread_id,
-                quiet.id,
-                direction=direction,
-            )
-            assert await preserved.get("notifies_runtime") is False
+        while True:
+            if await notifies_runtime(quiet.id) is not None:
+                break
+            await asyncio.sleep(0.01)
+        await cli("agent", "review", "approve", denied_row["thread_id"])
+        assert not await notifies_runtime(quiet.id)
         renewed = await finish(cloud_peer)
         assert (
             again.body
@@ -484,26 +451,12 @@ async def exercise(path: Path, source: str, tests: Path):
             f"agent.workspace={path / 'Live'}",
         )
         live = (await agents())[-1]
-        async with control() as client:
-            registry = await client.context.call(
-                "accept", Symbol("bazaar_contrib_agent:AGENTS")
-            )
-            await registry.call("wait_applied")
-            identities = await registry.get("running")
-            assert live["id"] in identities
-            management = await client.context.call(
-                "accept", Symbol("bazaar_contrib_agent_command:AGENT_CONFIGURATION")
-            )
-            snapshot = await management.call("read")
-            await management.call(
-                "edit",
-                live["id"],
-                {"name": "Public live desk"},
-                expected_revision=await snapshot.get("revision"),
-            )
-            await registry.call("wait_applied")
-            identities = await registry.get("running")
-            assert await identities[live["id"]].get("name") == "Public live desk"
+        endpoint = path / "Live" / "channel.json"
+        while True:
+            if await asyncio.to_thread(endpoint.exists):
+                break
+            await asyncio.sleep(0.01)
+        before = (await asyncio.to_thread(endpoint.stat)).st_mtime_ns
         await cli(
             "agent",
             "edit",
@@ -515,11 +468,7 @@ async def exercise(path: Path, source: str, tests: Path):
             "--set",
             "agent.session.config.sandbox.policy=danger-full-access",
         )
-        async with control() as client:
-            registry = await client.context.call(
-                "accept", Symbol("bazaar_contrib_agent:AGENTS")
-            )
-            await registry.call("wait_applied")
+        await restarted("Live", before)
         peer = await connect("Live")
         peer.automatic = True
         stack.push_async_callback(peer.aclose)
@@ -537,18 +486,11 @@ async def exercise(path: Path, source: str, tests: Path):
         assert report["title"] == "Updated live report"
         assert message.body in report["inbox"]
         await cli("agent", "remove", live["id"])
-        async with control() as client:
-            registry = await client.context.call(
-                "accept", Symbol("bazaar_contrib_agent:AGENTS")
-            )
-            await registry.call("wait_applied")
-            identities = await registry.get("running")
-            assert set(identities) == {cloud["id"], tifa["id"]}
         assert all(item["id"] != live["id"] for item in await agents())
         assert await asyncio.to_thread((path / "Live").is_dir)
         await asyncio.to_thread(
             print,
-            "Live CLI add/edit/remove and public edits apply without restarting the node",
+            "Live CLI add/edit/remove apply without restarting the node",
             flush=True,
         )
     await asyncio.to_thread(
@@ -575,10 +517,9 @@ async def exercise(path: Path, source: str, tests: Path):
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            assert (
-                process.stdout is not None
-                and await process.stdout.readline() == b"bcn ready\n"
-            )
+            assert process.stdout is not None
+            while (line := await process.stdout.readline()) != b"bcn ready\n":
+                assert line, "bcn run ended before it was ready"
         finally:
             if process.returncode is None:
                 process.send_signal(signal.SIGTERM)

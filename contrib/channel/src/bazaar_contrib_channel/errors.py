@@ -89,6 +89,12 @@ class ChannelRejectedError(ChannelError):
     rejected = True
 
 
+class ChannelUnavailableError(ChannelError):
+    """No running channel of the agent speaks for this conversation or bot."""
+
+    kind = "channel_unavailable"
+
+
 class ChannelAuthenticationError(ChannelError):
     """The upstream requires corrected credentials or permissions."""
 

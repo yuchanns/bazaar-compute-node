@@ -12,8 +12,7 @@ from tempfile import TemporaryDirectory
 
 import tomli_w
 from bazaar_contrib_config_versions import Converter
-from bazaar_contrib_sidecar import CLIENT, Client, Construct, Symbol
-from bazaar_contrib_sidecar.wire import Request
+from bazaar_contrib_sidecar import CLIENT, Client
 from bazaar_core import (
     Context,
     Contrib,
@@ -104,8 +103,6 @@ async def exercise(directory: Path, transport: str, control: str):
             {"enabled": [{"entry": "sidecar"}]},
         ]
     journal = directory / "journal.txt"
-    child = directory / "child.txt"
-    abandoned = directory / "abandoned.txt"
     config = directory / "config.toml"
     payload = {
         "version": "5",
@@ -153,117 +150,55 @@ async def exercise(directory: Path, transport: str, control: str):
     async with node(config):
         # The consumer graph starts only the provider, while the other process serves handlers.
         async with ContribHub() as hub, hub.enable(entries):
-            remote = clients[0].context
+            client = clients[0]
             for _ in range(16):
-                assert "sidecar" in await remote.get("name")
-            handle = await remote.call(
-                "accept", Symbol("bazaar_sidecar_example:JOURNAL")
-            )
-            await handle.call("write", "direct cross-process service\n")
-            await handle.call("flush")
+                assert await client.call("journal", "tag") == "before"
+            await client.call("journal", "write", "direct cross-process service\n")
             await command(config, "remote", "append", "cross-process note 🌙")
-            await remote.call(
-                "announce", Symbol("bazaar_sidecar_example:NOTE"), "x" * 300_000
-            )
+            await client.call("journal", "append", "x" * 300_000)
             text = await asyncio.to_thread(journal.read_text)
             assert "direct cross-process service" in text
             assert "cross-process note 🌙" in text and "x" * 300_000 in text
-            timer = await remote.call("accept", Symbol("bazaar_contrib_timer:TIMER"))
             for timeout in (None, 0.2):
-                pending = await timer.call("create", 60_000)
-                sibling = await timer.call("create", 50)
                 waiting = asyncio.create_task(
-                    clients[0].request(
-                        Request(operation="call", target=pending.id, method="wait"),
-                        timeout=timeout,
-                    )
+                    client.call("journal", "wait", 60_000, timeout=timeout)
                 )
-                await sibling.call("wait")
+                await client.call("journal", "wait", 50)
                 if timeout is None:
                     waiting.cancel()
                 result = await asyncio.gather(waiting, return_exceptions=True)
                 assert isinstance(result[0], (asyncio.CancelledError, TimeoutError))
-                while await pending.get("active"):
-                    await remote.get("name")
-                assert await timer.get("now_ms") < await pending.get("deadline")
-                await pending.release()
-                await sibling.release()
-            await timer.release()
+                while await asyncio.to_thread(journal.read_text) == text:  # noqa: ASYNC110 - The signal is a file in another process.
+                    await asyncio.sleep(0.01)
+                text = await asyncio.to_thread(journal.read_text)
+                assert text.endswith("wait 60000 cancelled\n")
             message = "x" * 3_000_000 + "完整的长消息 🌙"
-            configuration = await remote.call(
-                "accept", Symbol("bazaar_contrib_config:CONFIGURATION")
-            )
-            _, snapshot = await configuration.call("read")
+            _, snapshot = await client.call("configuration", "read")
             payload["contribs"][-1]["enabled"][0]["config"]["tag"] = message
-            snapshot = await configuration.call(
-                "commit", payload, expected_revision=await snapshot.get("revision")
+            snapshot = await client.call(
+                "configuration",
+                "commit",
+                payload,
+                expected_revision=snapshot["revision"],
             )
-            _, snapshot = await configuration.call("read")
-            saved = await snapshot.get("payload")
+            _, snapshot = await client.call("configuration", "read")
+            saved = snapshot["payload"]
             assert message in saved["contribs"][-1]["enabled"][0]["config"]["tag"]
             payload["contribs"][-1]["enabled"][0]["config"]["tag"] = "before"
-            snapshot = await configuration.call(
-                "commit", payload, expected_revision=await snapshot.get("revision")
+            await client.call(
+                "configuration",
+                "commit",
+                payload,
+                expected_revision=snapshot["revision"],
             )
-            await snapshot.release()
-            await configuration.release()
-
-            for path in (child, abandoned):
-                candidate = await remote.call(
-                    "validate",
-                    Construct(
-                        "bazaar_core:Composition",
-                        {
-                            "entries": [
-                                Construct(
-                                    "bazaar_core:ContribEntry",
-                                    {
-                                        "name": path.stem,
-                                        "definition": Symbol(
-                                            "bazaar_sidecar_example:journal"
-                                        ),
-                                        "config": {"path": str(path), "tag": path.stem},
-                                    },
-                                )
-                            ]
-                        },
-                    ),
-                    local=[Symbol("bazaar_sidecar_example:JOURNAL")],
-                )
-                scope = await remote.call("enable", candidate)
-                if path == child:
-                    async with scope.enter():
-                        await remote.call(
-                            "announce",
-                            Symbol("bazaar_sidecar_example:NOTE"),
-                            "owned child",
-                        )
-                    assert "child stopped" in await asyncio.to_thread(child.read_text)
-                    await scope.release()
-                else:
-                    # Intentionally leave a real entered child to connection-owned cleanup.
-                    await clients[0].request(
-                        Request(operation="enter", target=scope.id)
-                    )
-                await candidate.release()
 
             payload["contribs"][-1]["enabled"][0]["config"]["tag"] = "after"
             await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
             result = json.loads(await command(config, "remote", "refresh"))
             assert result["applied"], result
-            handle = await remote.call(
-                "accept", Symbol("bazaar_sidecar_example:JOURNAL")
-            )
-            await handle.call("write", "service after refresh\n")
-            await handle.call("flush")
-            snapshots = await remote.get("snapshots")
-            names = {await record.get("name") for record in snapshots}
-            assert "sidecar-journal" in names
+            assert await client.call("journal", "tag") == "after"
+            await client.call("journal", "write", "service after refresh\n")
 
-        while "abandoned stopped" not in await asyncio.to_thread(  # noqa: ASYNC110 - The signal is a file in another process.
-            abandoned.read_text
-        ):
-            await asyncio.sleep(0.01)
         text = await asyncio.to_thread(journal.read_text)
         assert "before stopped" in text and "after started" in text
         assert "service after refresh" in text
@@ -280,7 +215,7 @@ async def exercise(directory: Path, transport: str, control: str):
         pass
     assert "after stopped" in await asyncio.to_thread(journal.read_text)
     print(
-        f"Installed {provider} with V4 control={control}: remote consumers, hot apply, child scopes and restart passed"
+        f"Installed {provider} with V4 control={control}: remote entries, hot apply and restart passed"
     )
 
 
