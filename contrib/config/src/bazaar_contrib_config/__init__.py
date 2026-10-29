@@ -33,6 +33,7 @@ lazy from .loading import (
     configuration,
     remote,
 )
+lazy from .memory import MemoryConfigStore, memory
 
 __all__ = [
     "CONFIGURATION",
@@ -61,7 +62,9 @@ __all__ = [
     "ContribPackage",
     "EnabledContrib",
     "FieldChange",
+    "MemoryConfigStore",
     "PackageRequirement",
     "configuration",
+    "memory",
     "remote",
 ]

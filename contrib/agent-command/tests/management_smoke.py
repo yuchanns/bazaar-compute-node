@@ -18,7 +18,6 @@ from typing import Any
 import tomli_w
 from bazaar_compute_node.boot import build, node
 from bazaar_contrib_config import ConfigDocument
-from bazaar_contrib_config_filesystem import FileConfigStore
 from bazaar_contrib_sidecar import CLIENT, Client
 from bazaar_core import (
     Composition,
@@ -235,14 +234,11 @@ async def exercise(path: Path, source: str, tests: Path):
     if os.name == "nt":
         payload = await document()
         endpoint = rf"\\.\pipe\bcn-task17-{cloud['id']}"
-        async with FileConfigStore(config) as store:
-            snapshot = await store.read()
-            assert snapshot is not None
-            for package in payload["contribs"]:
-                for entry in package["enabled"]:
-                    if entry["entry"] == "sidecar-windows":
-                        entry["config"] = {"endpoint": endpoint}
-            await store.write(payload, expected_revision=snapshot.revision)
+        for package in payload["contribs"]:
+            for entry in package["enabled"]:
+                if entry["entry"] == "sidecar-windows":
+                    entry["config"] = {"endpoint": endpoint}
+        await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
 
     os.environ["BCN_ENDPOINT"] = endpoint
 

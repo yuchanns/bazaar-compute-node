@@ -62,6 +62,59 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
             ],
             check=True,
         )
+        packages: dict[str, list[Path]] = {}
+        for wheel in artifacts.glob("*.whl"):
+            name = wheel.name.split("-", 1)[0].replace("_", "-")
+            packages.setdefault(name, []).append(wheel)
+        for name, wheels in packages.items():
+            index = artifacts / "simple" / name
+            index.mkdir(parents=True)
+            (index / "index.html").write_text(
+                "\n".join(
+                    f'<a href="{wheel.as_uri()}">{wheel.name}</a>' for wheel in wheels
+                )
+            )
+        source = (artifacts / "simple").as_uri()
+        for mode in ("default", "explicit", "custom"):
+            directory = tmp_path / mode
+            directory.mkdir()
+            prefix = directory / "environment"
+            subprocess.run(["uv", "venv", "--python", "3.15", str(prefix)], check=True)
+            python = prefix / (
+                "Scripts/python.exe" if os.name == "nt" else "bin/python"
+            )
+            subprocess.run(
+                [
+                    "uv",
+                    "pip",
+                    "install",
+                    "--python",
+                    str(python),
+                    "--index",
+                    source,
+                    "--prerelease",
+                    "allow",
+                    "blockbuster>=1.5.29,<1.6",
+                    str(packages["bazaar-compute-node"][0]),
+                    *(
+                        [str(packages["bcn-example-contribs"][0])]
+                        if mode == "custom"
+                        else []
+                    ),
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    str(python),
+                    str(Path(__file__).with_name("bootstrap_smoke.py")),
+                    str(directory),
+                    mode,
+                ],
+                cwd=directory,
+                env={**os.environ, "BCN_HOME": str(directory)},
+                check=True,
+            )
         environment = tmp_path / "environment"
         subprocess.run(
             ["uv", "venv", "--python", "3.15", str(environment)],

@@ -757,3 +757,29 @@ README 中配置示例使用 `==0.3.*`，Unix／Windows 传输声明各自的平
 实际下载 PyPI wheel／sdist，核对文件 SHA-256、README 与全部 40 个生产文件；干净环境安装六包并加载入口通过。
 各仓 annotated `v0.3.0rc10` 指向对应固定发行提交，发行准备仅变更版本及锁。
 社区索引在六包发布后合入 [246e49a](https://github.com/open-bazaar/contrib-index/commit/246e49a)，包含六条无版本约束的包名／来源记录。
+
+## 2026-10-30 缺失 filesystem 时的 memory 自举
+
+消息 `681093b1-2e48-5d3d-aa1c-2c1516a82d4b` 要求在当前迁仓分支新增一个提交实现此前讨论的自举。
+按 `8017c232-0ed9-5335-9868-5f60db94efc8` 与 `2a2d6807-5e57-507b-a279-196e1b9f1e4a`，
+仅缺失 filesystem 时先启用临时 Hub；已有 filesystem 和其他 configer 沿用原有单 Hub 启动。core 保持原样。
+
+现有 config 包提供无外部 I/O 的 MemoryConfigStore 和 config-memory 入口，保存深拷贝快照并按 revision 条件写入。
+app 删除对 filesystem 的正式依赖，将同名包放入默认配置的安装声明。
+启动时只按最终 configer 与已安装入口决定路径，默认与显式 filesystem 使用相同判断。
+缺失时临时组合启用 memory、版本服务、命令与 manager，文档中的包要求仅包含 filesystem。
+按 review 消息 `36c7d057-7f29-5f10-be96-546e0b8da06d` 的第一种方式，app 直接构造临时文档，
+写明 filesystem 安装要求及 commands、contrib-manager 条目；正常启动时再读取完整默认配置。
+manager 的 bootstrap 操作在现有环境锁内安装这些自举包，保留当前宿主与已有包；它通过既有 uv 定位和命令执行实现。
+临时组合退出后重新发现 filesystem，再用原启动入口读取用户配置并准备实际业务依赖。
+
+验收通过真正安装的 app 和独立载体，覆盖默认／显式 filesystem 的缺失自举、已安装载体的离线重启、
+其他 configer 在未安装 filesystem 时直接使用，以及已有配置内容保留。继续执行 app、manager 安装回归、Ruff 与根目录 Pyright/LSP。
+完成后新增签名提交并更新 PR #127。
+
+本地验收完成：app 的隔离配置与四条载体路径通过；manager 的 venv／uv tool 安装与在线升级四项通过（377.59 秒）；
+agent-command 两项、node-management 安装态运行验收通过，app wheel／sdist 的独立安装与生命周期验证通过。
+测试准备与离线编辑直接读写 TOML，运行时通过所选载体的公共配置服务访问文档。
+十二个变更 Python 文件的 Ruff 格式与 lint、仓库根目录 Pyright/LSP 通过。
+根锁包含 51 包，不包含六个独立实现；主仓 dev 依赖与基线一致，core 没有改动。
+临时文档简化后重新执行 app 的真实安装回归，1 项通过（18.71 秒）；boot.py 的 Ruff 格式与 lint、根目录 Pyright/LSP 通过。

@@ -12,12 +12,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 lazy from contextlib import asynccontextmanager
 
+import tomli_w
 from bazaar_contrib_config import (
     ConfigDocument,
     ContribPackage,
     EnabledContrib,
 )
-from bazaar_contrib_config_filesystem import FileConfigStore
 from bazaar_contrib_manager import CONTRIB_CATALOG, ContribCatalog
 from bazaar_core import (
     COMPOSITION,
@@ -53,8 +53,8 @@ async def exercise(path: Path) -> None:
             ),
         ),
     ).model_dump(mode="json")
-    async with FileConfigStore(configuration) as store:
-        await store.write(payload, expected_revision=None)
+    await asyncio.to_thread(configuration.parent.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(configuration.write_text, tomli_w.dumps(payload))
     catalogs: list[ContribCatalog] = []
 
     @asynccontextmanager

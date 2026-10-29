@@ -5,6 +5,10 @@ contrib_indexes = [
 ]
 
 [[contribs]]
+package = "bazaar-contrib-config-filesystem~=0.3.0rc1"
+enabled = []
+
+[[contribs]]
 package = "bazaar-contrib-agent~=0.3.0rc1"
 [[contribs.enabled]]
 entry = "agent"

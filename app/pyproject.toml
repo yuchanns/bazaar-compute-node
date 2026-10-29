@@ -9,7 +9,6 @@ requires-python = ">=3.15"
 dependencies = [
     "bazaar-core~=0.3.0rc1",
     "bazaar-contrib-config~=0.3.0rc1",
-    "bazaar-contrib-config-filesystem~=0.3.0rc1",
     "bazaar-contrib-config-versions~=0.3.0rc1",
     "bazaar-contrib-manager~=0.3.0rc1",
     "bazaar-contrib-invoke~=0.3.0rc1",

@@ -623,6 +623,32 @@ class ContribManager:
                 await self._apply(id, snapshot)
         await self._record(id, recovery=None)
 
+    async def bootstrap(self) -> Operation:
+        """Install bootstrap declarations before reading the persistent carrier."""
+
+        async def action(id: UUID) -> None:
+            candidate, _ = await self.configuration.read()
+            document = ConfigDocument.model_validate(candidate.payload)
+            await self.packages.initialize()
+            await self._record(id, phase="installing")
+            for package in document.contribs:
+                if package.package and package.applies:
+                    await self.packages.command(
+                        str(self.packages.uv),
+                        "pip",
+                        "install",
+                        "--python",
+                        str(self.packages.python),
+                        "--default-index",
+                        package.source or self.packages.source,
+                        "--prerelease",
+                        "allow",
+                        package.package,
+                    )
+            await self._record(id, installed=True)
+
+        return await self._submit("bootstrap", action, remote=False)
+
     async def sync(
         self, *, only_missing: bool = False, upgrade: bool = False
     ) -> Operation:

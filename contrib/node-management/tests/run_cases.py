@@ -11,7 +11,7 @@ lazy from importlib.resources import files
 lazy from pathlib import Path
 
 import pytest
-from bazaar_contrib_config_filesystem import FileConfigStore
+import tomli_w
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
@@ -30,8 +30,7 @@ async def test_run_uses_selected_configuration_and_exits(tmp_path: Path, sig: in
         for entry in package["enabled"]:
             if entry["entry"] == "logging":
                 entry["config"] = {"path": str(log)}
-    async with FileConfigStore(configured) as store:
-        await store.write(payload, expected_revision=None)
+    await asyncio.to_thread(configured.write_text, tomli_w.dumps(payload))
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",

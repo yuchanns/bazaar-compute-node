@@ -62,7 +62,6 @@ version = "0.3.0rc9"
 source = { editable = "app" }
 dependencies = [
     { name = "bazaar-contrib-config" },
-    { name = "bazaar-contrib-config-filesystem" },
     { name = "bazaar-contrib-config-versions" },
     { name = "bazaar-contrib-invoke" },
     { name = "bazaar-contrib-manager" },
@@ -73,7 +72,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-config", editable = "contrib/config" },
-    { name = "bazaar-contrib-config-filesystem", specifier = "~=0.3.0rc1" },
     { name = "bazaar-contrib-config-versions", editable = "contrib/config-versions" },
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
     { name = "bazaar-contrib-manager", editable = "contrib/manager" },
@@ -241,20 +239,6 @@ requires-dist = [
     { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
     { name = "bazaar-core", editable = "core" },
     { name = "packaging", specifier = ">=26.0" },
-]
-
-[[package]]
-name = "bazaar-contrib-config-filesystem"
-version = "0.3.0rc9"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "bazaar-contrib-config" },
-    { name = "filelock" },
-    { name = "tomli-w" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/16/94/d7658edc06203a1cbc6444ae018717b33834285a2a18ffecf774acb37d8e/bazaar_contrib_config_filesystem-0.3.0rc9.tar.gz", hash = "sha256:6cdbf41e53039488740e60f6d60f6ac39222c4b087726e1d3e99b123a9b5ab4a", size = 7387, upload-time = "2026-10-29T09:11:09.653Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/5e/dbabe668ec7f6c2a5a11652be92a6abb6014c8645556397115d204a1bfeb/bazaar_contrib_config_filesystem-0.3.0rc9-py3-none-any.whl", hash = "sha256:25136bfe62404fc3795174d840bb497d9cd5917cdbf001a8355c6b18fa15a8e0", size = 8749, upload-time = "2026-10-29T09:11:08.862Z" },
 ]
 
 [[package]]
