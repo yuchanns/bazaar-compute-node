@@ -43,6 +43,7 @@ from bazaar_core import (
     Composition,
     Context,
     Contrib,
+    ContribChange,
     ContribEntry,
     Failed,
     ServiceKey,
@@ -308,9 +309,17 @@ async def harness_lifespan(ctx: Context, config: _HarnessConfig):
         yield
 
 
+async def stopping(ctx: Context, change: ContribChange) -> None:
+    if any(
+        record.id == ctx.id and isinstance(record.state, Stopping)
+        for record in change.snapshots
+    ):
+        ctx.accept(_LOOP).drain()
+
+
 async def contact_reviewed(ctx: Context, event: ContactReviewed) -> None:
     if event.review is Review.APPROVED and ctx.accept(AGENT).id == event.agent.id:
-        await ctx.accept(_LOOP).recover()
+        await ctx.accept(_LOOP).recover(event.thread)
 
 
 instance = Contrib(config=_InstanceConfig, offers=[AGENT], lifespan=instance_lifespan)
@@ -319,7 +328,7 @@ _loop = Contrib(
     offers=[_LOOP],
     accepts=[*SERVICES, AGENTS, AGENT, CONFIGURATION],
     lifespan=loop_lifespan,
-    listen={CONTACT_REVIEWED: contact_reviewed},
+    listen={CONTACT_REVIEWED: contact_reviewed, CONTRIB_CHANGED: stopping},
 )
 _channel = Contrib(
     config=_ChannelConfig, accepts=[AGENT, _LOOP], lifespan=channel_lifespan

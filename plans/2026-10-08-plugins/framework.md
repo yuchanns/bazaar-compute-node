@@ -2503,10 +2503,11 @@ app 的普通 Python 入口提供启动输入和默认资源，core 的运行接
 - Codex 回合 interrupted 按 0.2 处理：封禁该 provider 一小时并在有可用 provider 时切换重试。
 - 联系审核通过只唤醒该会话；配置变更不再触发全量 `recover()`。
 - 启动阶段的未读唤醒不依赖 priority 0 provider：有任一可运行的 harness 即开始回合。
-- 单个 Agent 停止时，在途 bcc 与 reminder 命令按 0.2 的 5 秒预算排空，整节点退出继续保持直接取消。
+- Agent 停止时恢复 0.2 的在途命令排空：Messages 与 Reminders 提供 `drain(owner, timeout)`，
+  先停止接收该 Agent 的 bcc 与 reminder 命令，等待 30 秒后取消未完成的命令；
+  整节点退出时各 Agent 在进入停止状态即同时开始排空，总等待不超过 30 秒。
 
-验证使用真实 Channel 与 Agent 安装态场景，核对错误回复文本、provider 切换、审核与配置变更的唤醒范围、
-单 Agent 停止时的命令完成、整节点退出。
+验证使用真实 Channel 与 Agent 安装态场景，核对错误回复文本、provider 切换、审核与配置变更的唤醒范围，以及停止时在途命令的排空与超时取消。
 
 ### 升级提示（延后）
 

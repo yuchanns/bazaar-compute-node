@@ -165,10 +165,12 @@ class AgentLoop:
         self.tasks: set[asyncio.Task[None]] = set()
         self.teardowns: set[asyncio.Task[None]] = set()
         self.dispatcher: asyncio.Task[None] | None = None
+        self.draining: asyncio.Task[None] | None = None
         self.bindings = AsyncExitStack()
         self.failure = TaskFailureSignal()
         self.failure.reset()
         self.notified: dict[Thread, int] = {}
+        self.recovered = False
         self.locks: dict[Thread, asyncio.Lock] = {}
         self.service: MessageService
         self.contacts: CollaborationService
@@ -343,19 +345,48 @@ class AgentLoop:
         await loop.queue.put(Wakeup(message, runtime, anchor, connection, wake_id))
         return True
 
-    async def recover(self) -> None:
-        if not self.runtimes:
+    async def recover(self, thread: Thread | None = None) -> None:
+        if thread is None and (
+            self.recovered
+            or not any(
+                connection.ready.is_set()
+                for connection in self.channels.connections.values()
+            )
+        ):
             return
+        runtime = self.select()
+        if runtime is None:
+            return
+        if thread is None:
+            self.recovered = True
         for owner in await self.messages.list_unread_message_owners():
             if owner.agent.id != self.agent.id:
                 continue
             message = owner.trigger_message
+            if thread is not None and message.thread_id != thread.id:
+                continue
             if message.seq <= self.notified.get(Thread(message.thread_id), -1):
                 continue
-            await self.wake(message)
+            await self.wake(message, runtime=runtime)
+
+    def drain(self) -> asyncio.Task[None]:
+        # Every agent stopping in one shutdown drains at once instead of one after another.
+        if self.draining is None:
+            self.draining = asyncio.create_task(
+                self.drain_commands(), name=f"agent-drain:{self.agent.id}"
+            )
+        return self.draining
+
+    async def drain_commands(self) -> None:
+        owner = AgentActor(self.agent.id)
+        await asyncio.gather(
+            self.messages.drain(owner, timeout=30),
+            self.reminders.drain(owner, timeout=30),
+        )
 
     async def stop(self) -> None:
         self.channels.state = states.Lifecycle.STOPPING
+        await self.drain()
         self.failure.disable()
         tasks = (
             *self.tasks,
@@ -1142,10 +1173,13 @@ class AgentLoop:
         sender = ChannelSender(
             self.channels, self.timer, policy=ChannelRetryPolicy(timeout=600)
         )
-        code = f" ({failure.code})" if failure.code is not None else ""
-        text = f"{failure.reason.value.replace('_', ' ')}{code}: {failure.message}"
         body = await asyncio.to_thread(
-            lambda: template("runtime_failed.tpl").render(error=text)
+            lambda: template("runtime_failed.tpl").render(
+                error=failure.reason.value
+                if failure.reason is HarnessFailureReason.INTERNAL
+                else failure.message,
+                unknown=failure.needs_reconciliation,
+            )
         )
         for item in active.participants.values():
             try:
@@ -1478,23 +1512,22 @@ class AgentLoop:
                                     )
                                 }
                             )
-                        if failure.reason is not HarnessFailureReason.INTERRUPTED:
-                            if not isinstance(loop.state, states.Idle):
-                                await self.close_session(loop)
-                            runtime.banned_until_ms = self.timer.now_ms + 3_600_000
-                            await self.audit.publish(
-                                "harness.pool.banned",
-                                context=context,
-                                payload={
-                                    "ban_until_ms": runtime.banned_until_ms,
-                                    "terminal_state": outcome.payload.type,
-                                },
-                            )
-                            alternative = self.select(exclude=attempted)
-                            if alternative is not None:
-                                await self.close_session(loop)
-                                runtime = alternative
-                                continue
+                        if not isinstance(loop.state, states.Idle):
+                            await self.close_session(loop)
+                        runtime.banned_until_ms = self.timer.now_ms + 3_600_000
+                        await self.audit.publish(
+                            "harness.pool.banned",
+                            context=context,
+                            payload={
+                                "ban_until_ms": runtime.banned_until_ms,
+                                "terminal_state": outcome.payload.type,
+                            },
+                        )
+                        alternative = self.select(exclude=attempted)
+                        if alternative is not None:
+                            await self.close_session(loop)
+                            runtime = alternative
+                            continue
                     elif (
                         isinstance(outcome.payload, TurnCompleted)
                         and runtime.banned_until_ms

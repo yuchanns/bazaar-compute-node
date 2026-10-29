@@ -230,6 +230,10 @@ class Messages(Protocol):
         session_binding_validator: SessionBindingValidator | None = None,
     ) -> AbstractAsyncContextManager[MessageService]: ...
 
+    async def drain(self, owner: Agent, *, timeout: float) -> None:  # noqa: ASYNC109
+        """Stop accepting the owner's commands, then cancel any still running at the timeout."""
+        ...
+
     async def request(self, request: Mapping[str, object]) -> Mapping[str, object]: ...
 
 

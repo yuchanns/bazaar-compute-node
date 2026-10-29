@@ -94,6 +94,10 @@ class Reminders:
             del self._bindings[owner]
             await dispatcher.drain(timeout=shutdown_timeout)
 
+    async def drain(self, owner: Agent, *, timeout: float) -> None:  # noqa: ASYNC109
+        dispatcher, _ = self._bindings[owner]
+        await dispatcher.drain(timeout=timeout)
+
     async def request(self, request: Mapping[str, object]) -> Mapping[str, object]:
         try:
             owner = Agent(_AgentRequest.model_validate(request).agent_id)
