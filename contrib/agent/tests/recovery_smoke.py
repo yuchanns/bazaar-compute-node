@@ -49,7 +49,7 @@ async def exercise(path: Path):
     contribs = [
         {"contrib": "audit"},
         {"contrib": "storage"},
-        {"contrib": "sqlite", "config": {"path": str(path / "messages.sqlite3")}},
+        {"contrib": "sqlite", "config": {"name": "messages.sqlite3"}},
         {"contrib": "database", "config": {"backend": "sqlite"}},
         *(
             {"contrib": name}
@@ -119,7 +119,7 @@ async def exercise(path: Path):
         assert json.loads(await process.stdout.readline())["persisted"]
     finally:
         await stop(process, peer)
-    database = path / "messages.sqlite3"
+    database = Path(os.environ["BCN_HOME"]) / ".bcn" / "messages.sqlite3"
     before = await asyncio.to_thread(sessions, database, agent["id"], forget=True)
     agent["harness"] = [{"kind": "document"}]
     process, peer = await start()

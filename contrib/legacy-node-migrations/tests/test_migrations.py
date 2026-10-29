@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 lazy import asyncio
 lazy import sys
 lazy import zlib
@@ -84,13 +84,17 @@ async def registered(schema, modules):
 @pytest.mark.parametrize("version", range(1, 33))
 async def test_published_message_upgrade_preserves_business_data_and_original_ledger(
     tmp_path: Path,
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     version: int,
     modules,
     timer: Timer,
 ):
     root = (await asyncio.to_thread(Path(__file__).resolve)).parents[3]
-    path = tmp_path / "node.sqlite3"
-    expected = tmp_path / "expected.sqlite3"
+    path = database_path
+    expected = tmp_path / "expected" / ".bcn" / "bcn.sqlite3"
+    for directory in (path.parent, expected.parent):
+        await asyncio.to_thread(directory.mkdir, parents=True)
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         str(root / "contrib/legacy-node-migrations/tests/fixtures/history.py"),
@@ -103,10 +107,14 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
     )
     _, stderr = await process.communicate()
     assert process.returncode == 0, stderr.decode()
-    async with (
-        open_database(SqliteConfig(path=path), timer=timer) as database,
-        open_database(SqliteConfig(path=expected), timer=timer) as reference,
-    ):
+    async with AsyncExitStack() as stack:
+        database = await stack.enter_async_context(
+            open_database(SqliteConfig(), timer=timer)
+        )
+        monkeypatch.setenv("BCN_HOME", str(tmp_path / "expected"))
+        reference = await stack.enter_async_context(
+            open_database(SqliteConfig(), timer=timer)
+        )
         original = await database.select(Select(table="schema_migrations"))
         schema = Schema(database)
         await schema.start()
@@ -134,12 +142,11 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
 
 
 async def test_new_database_uses_current_baseline_and_retains_new_data(
-    tmp_path: Path, modules, timer: Timer
+    modules, timer: Timer
 ):
     from bazaar_contrib_storage import Insert
 
-    path = tmp_path / "fresh.sqlite3"
-    async with open_database(SqliteConfig(path=path), timer=timer) as database:
+    async with open_database(SqliteConfig(), timer=timer) as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, modules):
@@ -167,13 +174,11 @@ async def test_new_database_uses_current_baseline_and_retains_new_data(
 
 
 async def test_current_messages_keep_search_in_sync_with_the_sequence_key(
-    tmp_path: Path, modules, timer: Timer
+    modules, timer: Timer
 ):
     import bazaar_contrib_storage as s
 
-    async with open_database(
-        SqliteConfig(path=tmp_path / "search.sqlite3"), timer=timer
-    ) as database:
+    async with open_database(SqliteConfig(), timer=timer) as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, modules):
@@ -224,14 +229,15 @@ async def test_current_messages_keep_search_in_sync_with_the_sequence_key(
 
 
 async def test_registered_03_database_accepts_owned_reminder_versions_and_restart(
-    tmp_path: Path, modules, timer: Timer
+    database_path: Path, modules, timer: Timer
 ):
     import bazaar_contrib_storage as s
     from bazaar_contrib_schema import Migration, ModuleSchema
 
     fixture = Path(__file__).parent / "fixtures/node-v03.sqlite3.zlib"
     data = await asyncio.to_thread(fixture.read_bytes)
-    path = tmp_path / "registered-03.sqlite3"
+    path = database_path
+    await asyncio.to_thread(path.parent.mkdir, parents=True)
     await asyncio.to_thread(path.write_bytes, zlib.decompress(data))
     upgraded = {
         name: ModuleSchema(
@@ -258,7 +264,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
         else module
         for name, module in modules.items()
     }
-    async with open_database(SqliteConfig(path=path), timer=timer) as database:
+    async with open_database(SqliteConfig(), timer=timer) as database:
         previous = await database.select(Select(table="contrib_schema_migrations"))
         original = await database.select(Select(table="schema_migrations"))
         messages = await database.select(Select(table="messages"))
@@ -275,7 +281,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
         for row in previous:
             assert row in history
     for _ in range(2):
-        async with open_database(SqliteConfig(path=path), timer=timer) as database:
+        async with open_database(SqliteConfig(), timer=timer) as database:
             schema = Schema(database)
             await schema.start()
             async with registered(schema, dict(reversed(upgraded.items()))):
@@ -299,23 +305,33 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
 
 
 async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old_records(
-    tmp_path: Path, modules, timer: Timer
+    tmp_path: Path,
+    database_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    modules,
+    timer: Timer,
 ):
     from bazaar_contrib_storage import Insert
 
     fixture = Path(__file__).parent / "fixtures/node-v03-v17.sqlite3.zlib"
     data = await asyncio.to_thread(fixture.read_bytes)
-    path = tmp_path / "partial-03.sqlite3"
+    path = database_path
+    await asyncio.to_thread(path.parent.mkdir, parents=True)
     await asyncio.to_thread(path.write_bytes, zlib.decompress(data))
-    expected = tmp_path / "expected.sqlite3"
+    expected = tmp_path / "expected" / ".bcn" / "bcn.sqlite3"
     data = await asyncio.to_thread(
         fixture.with_name("node-v03.sqlite3.zlib").read_bytes
     )
+    await asyncio.to_thread(expected.parent.mkdir, parents=True)
     await asyncio.to_thread(expected.write_bytes, zlib.decompress(data))
-    async with (
-        open_database(SqliteConfig(path=path), timer=timer) as database,
-        open_database(SqliteConfig(path=expected), timer=timer) as reference,
-    ):
+    async with AsyncExitStack() as stack:
+        database = await stack.enter_async_context(
+            open_database(SqliteConfig(), timer=timer)
+        )
+        monkeypatch.setenv("BCN_HOME", str(tmp_path / "expected"))
+        reference = await stack.enter_async_context(
+            open_database(SqliteConfig(), timer=timer)
+        )
         previous = await database.select(Select(table="contrib_schema_migrations"))
         original = await database.select(Select(table="schema_migrations"))
         for run in range(2):
@@ -365,7 +381,7 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
 
 
 async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
-    tmp_path: Path, modules, timer: Timer
+    database_path: Path, modules, timer: Timer
 ):
     import time
 
@@ -386,10 +402,11 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
 
     fixture = Path(__file__).parent / "fixtures/node-v03.sqlite3.zlib"
     data = await asyncio.to_thread(fixture.read_bytes)
-    path = tmp_path / "lifespans.sqlite3"
+    path = database_path
+    await asyncio.to_thread(path.parent.mkdir, parents=True)
     await asyncio.to_thread(path.write_bytes, zlib.decompress(data))
     # Live scheduling requires a consistent fired occurrence and a future due time.
-    async with open_database(SqliteConfig(path=path), timer=timer) as database:
+    async with open_database(SqliteConfig(), timer=timer) as database:
         await database.update(
             Update(
                 table="reminders",
@@ -419,7 +436,7 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
                 ContribSpec(contrib=entry, config=config)
                 for entry, config in (
                     ("storage", {}),
-                    ("sqlite", {"path": str(path)}),
+                    ("sqlite", {}),
                     ("database", {"backend": "sqlite"}),
                     ("schema", {}),
                     ("legacy-node-migrations", {}),

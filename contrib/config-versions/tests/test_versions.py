@@ -153,7 +153,7 @@ async def test_v3_and_v4_keep_multiple_entities_data_and_provider_settings(
         package.package == "bazaar-contrib-claude-code"
         for package in candidate.required_packages
     )
-    assert entries["sqlite"]["path"] == str(tmp_path / ".bcn" / "history.sqlite3")
+    assert entries["sqlite"]["name"] == "history.sqlite3"
     assert (
         entries["agent"]["agents"][0]["harness"][0]["env"]["ANTHROPIC_API_KEY"]
         == "KEY_WORK"

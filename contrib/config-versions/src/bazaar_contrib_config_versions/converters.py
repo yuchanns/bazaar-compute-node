@@ -26,7 +26,6 @@ lazy from .legacy import (
     _v1_to_v2_payload,
     _v2_to_v3_payload,
     _v3_to_v4_payload,
-    resolve_data_dir,
 )
 
 _VERSION = TypeAdapter(Literal["1", "2", "3", "4", "5"])
@@ -93,7 +92,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
 
     add("status", "status")
     add("storage", "storage")
-    add("sqlite", "sqlite", {"path": str(resolve_data_dir() / node.database_name)})
+    add("sqlite", "sqlite", {"name": node.database_name})
     add("database", "storage", {"backend": "sqlite"})
     add("schema", "schema")
     if old.agent:
@@ -114,7 +113,7 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
             ),
             FieldChange(
                 source="node.database_name",
-                target="contribs[bazaar-contrib-sqlite].enabled[sqlite].config.path",
+                target="contribs[bazaar-contrib-sqlite].enabled[sqlite].config.name",
             ),
         ]
     )

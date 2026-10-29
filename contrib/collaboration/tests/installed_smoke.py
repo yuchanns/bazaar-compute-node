@@ -120,7 +120,9 @@ async def node(config: Path):
 
 def rows(directory: Path, table: str) -> list[dict[str, Any]]:
     with closing(
-        sqlite3.connect((directory / "node.sqlite3").as_uri() + "?mode=ro", uri=True)
+        sqlite3.connect(
+            (directory / ".bcn" / "node.sqlite3").as_uri() + "?mode=ro", uri=True
+        )
     ) as database:
         database.row_factory = sqlite3.Row
         return [dict(row) for row in database.execute(f"SELECT * FROM {table}")]
@@ -226,7 +228,7 @@ async def exercise(directory: Path):
             for entry, value in (
                 ("commands", {}),
                 ("storage", {}),
-                ("sqlite", {"path": str(directory / "node.sqlite3")}),
+                ("sqlite", {"name": "node.sqlite3"}),
                 ("database", {"backend": "sqlite"}),
                 ("schema", {}),
                 ("legacy-node-migrations", {}),

@@ -144,7 +144,7 @@ class Peer:
 def stored_messages(directory: Path) -> dict[str, dict[str, Any]]:
     with closing(
         sqlite3.connect(
-            (directory / "messages.sqlite3").as_uri() + "?mode=ro", uri=True
+            (directory / ".bcn" / "messages.sqlite3").as_uri() + "?mode=ro", uri=True
         )
     ) as connection:
         connection.row_factory = sqlite3.Row
@@ -228,7 +228,7 @@ async def exercise(directory: Path):
                     for entry, value in (
                         ("commands", {}),
                         ("storage", {}),
-                        ("sqlite", {"path": str(directory / "messages.sqlite3")}),
+                        ("sqlite", {"name": "messages.sqlite3"}),
                         ("database", {"backend": "sqlite"}),
                         ("schema", {}),
                         ("legacy-node-migrations", {}),

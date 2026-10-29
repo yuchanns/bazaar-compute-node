@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 from bazaar_contrib_timer import TIMER, Timer
@@ -34,3 +35,9 @@ async def timer() -> AsyncIterator[Timer]:
         ),
     ):
         yield services[0]
+
+
+@pytest.fixture(autouse=True)
+def database_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("BCN_HOME", str(tmp_path))
+    return tmp_path / ".bcn" / "bcn.sqlite3"

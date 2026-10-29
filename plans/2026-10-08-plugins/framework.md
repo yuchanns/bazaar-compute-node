@@ -2483,8 +2483,8 @@ app 的普通 Python 入口提供启动输入和默认资源，core 的运行接
 - `-h` 与 `--help` 等价；无参数执行 `bcn` 的帮助输出与退出码恢复 0.2。
 - V4 读取忽略未知键，`[node.logging]` 表按 0.2 处理；迁移后的 V5 内容保持现有结构。
 - `agent-command` 加入默认组合与 V5 迁移，升级后 `bcn agent` 直接可用。
-- `bcn run` 就绪后输出各插件的状态与结果表格：插件、来源包、状态、结果；失败的插件以独立行展示，
-  不再只输出单行 warning。数据取自生命周期快照，按配置位置对应来源包。
+- `bcn run` 就绪后输出各插件的状态与结果表格：插件、状态、结果；失败的插件以独立行展示，
+  不再只输出单行 warning。数据取自生命周期快照。
 - `bcn agent list` 输出 Name、Channels、Harnesses、State、Today、Last event；多个 channel 与 harness
   按配置顺序以逗号连接；失败原因单独一行，对齐 State 列。Today 为 `输入/输出/缓存/$费用`，口径与 bcs 的
   当日用量一致，provider 未报费用时省略费用段。数据归 `agent` 包新增的 `agent-activity` 插件：

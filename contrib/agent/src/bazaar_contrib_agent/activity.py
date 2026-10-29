@@ -62,7 +62,7 @@ class AgentActivity:
 
     def _roll(self, day: date) -> None:
         if day > self.day:
-            self.before = {
+            self.before |= {
                 session: total for session, (_, total) in self.totals.items()
             }
             self.totals = {}

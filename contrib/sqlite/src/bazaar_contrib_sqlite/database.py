@@ -29,7 +29,7 @@ from .executor import (
 
 class SqliteConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    path: Path | None = None
+    name: str = Field(default="bcn.sqlite3", min_length=1)
     busy_timeout_ms: int = Field(default=5_000, gt=0)
     max_idle_readers: int = Field(default=2, gt=0)
     max_readers: int | None = Field(default=None, gt=0)
@@ -290,10 +290,7 @@ async def open_database(
     config: SqliteConfig, timer: Timer
 ) -> AsyncIterator[SqliteDatabase]:
     templates = await asyncio.to_thread(load_templates)
-    path = (
-        config.path
-        or Path(os.environ.get("BCN_HOME") or Path.home()) / ".bcn" / "bcn.sqlite3"
-    )
+    path = Path(os.environ.get("BCN_HOME") or Path.home()) / ".bcn" / config.name
     writer: aiosqlite.Connection | None = None
     readers: list[aiosqlite.Connection] = []
     try:

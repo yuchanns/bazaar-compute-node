@@ -2,7 +2,6 @@ from __future__ import annotations
 
 lazy import asyncio
 lazy from contextlib import asynccontextmanager
-lazy from pathlib import Path
 
 from bazaar_contrib_sqlite import SqliteConfig, open_database
 from bazaar_contrib_storage import (
@@ -97,10 +96,9 @@ async def registered(schema: Schema, module: ModuleSchema, entry: str = "schema"
 
 
 async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
-    tmp_path: Path,
     timer: Timer,
 ):
-    config = SqliteConfig(path=tmp_path / "modules.sqlite3")
+    config = SqliteConfig()
     async with open_database(config, timer=timer) as database:
         schema = Schema(database)
         await schema.start()
@@ -160,12 +158,9 @@ async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
 
 
 async def test_failed_unique_index_migration_can_resume_after_resolving_data(
-    tmp_path: Path,
     timer: Timer,
 ):
-    async with open_database(
-        SqliteConfig(path=tmp_path / "unique.sqlite3"), timer=timer
-    ) as database:
+    async with open_database(SqliteConfig(), timer=timer) as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, NOTES):
@@ -217,10 +212,8 @@ async def test_failed_unique_index_migration_can_resume_after_resolving_data(
             )
 
 
-async def test_table_ownership_survives_registration_exit(tmp_path: Path, timer: Timer):
-    async with open_database(
-        SqliteConfig(path=tmp_path / "ownership.sqlite3"), timer=timer
-    ) as database:
+async def test_table_ownership_survives_registration_exit(timer: Timer):
+    async with open_database(SqliteConfig(), timer=timer) as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, NOTES):

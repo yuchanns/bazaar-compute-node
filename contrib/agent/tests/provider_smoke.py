@@ -632,9 +632,7 @@ async def exercise(path: Path):
                 config={"endpoint": endpoint},
             ),
             ContribSpec(contrib="storage"),
-            ContribSpec(
-                contrib="sqlite", config={"path": str(path / "providers.sqlite3")}
-            ),
+            ContribSpec(contrib="sqlite", config={"name": "providers.sqlite3"}),
             ContribSpec(contrib="database", config={"backend": "sqlite"}),
             ContribSpec(contrib="schema"),
             ContribSpec(contrib="legacy-node-migrations"),
@@ -747,7 +745,7 @@ async def exercise(path: Path):
                 await inbound_context(
                     connected["Cloud"],
                     drafts["Cloud"],
-                    path / "providers.sqlite3",
+                    Path(os.environ["BCN_HOME"]) / ".bcn" / "providers.sqlite3",
                     persisted,
                 )
                 for name, peer in connected.items():
@@ -757,7 +755,7 @@ async def exercise(path: Path):
                             peer,
                             drafts[name],
                             session,
-                            path / "providers.sqlite3",
+                            Path(os.environ["BCN_HOME"]) / ".bcn" / "providers.sqlite3",
                             persisted,
                         )
                     await turn_failure(peer, drafts[name], session)

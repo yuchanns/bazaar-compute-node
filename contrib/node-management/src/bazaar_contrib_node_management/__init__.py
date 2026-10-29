@@ -9,7 +9,6 @@ lazy import re
 lazy import signal
 lazy import sys
 lazy from importlib.metadata import version
-lazy from typing import cast
 
 import click
 from bazaar_contrib_audit import AUDIT, AuditContext
@@ -17,33 +16,22 @@ from bazaar_contrib_config import CONFIGURATION
 from bazaar_contrib_invoke import COMMANDS, CommandEntry, table
 from bazaar_contrib_timer import TIMER
 from bazaar_core import Contrib
-lazy from bazaar_contrib_config import ConfigCandidate, ConfigDocument, Configuration
+lazy from bazaar_contrib_config import Configuration
 lazy from bazaar_core import Context, ContribStatus, Stopping
-lazy from packaging.requirements import Requirement
 
 __all__ = ["command_entry", "management", "node_health"]
 
 
-def _contribs(
-    configuration: Configuration, snapshots: tuple[ContribStatus, ...]
-) -> list[tuple[str, str, str, str]]:
-    """Each configured contrib's package, state and what it ended with."""
-    packages = [
-        Requirement(package.package).name if package.package else ""
-        for package in ConfigDocument.model_validate(
-            cast(ConfigCandidate, configuration.candidate).payload
-        ).contribs
-    ]
+def _contribs(snapshots: tuple[ContribStatus, ...]) -> list[tuple[str, str, str]]:
+    """Each configured contrib's state and what it ended with."""
     rows = []
     for record in snapshots:
-        match = re.fullmatch(r"contribs\[(\d+)\]\.enabled\[\d+\]", record.location)
-        if match is None:
+        if re.fullmatch(r"contribs\[\d+\]\.enabled\[\d+\]", record.location) is None:
             continue
         error = record.state.error if isinstance(record.state, Stopping) else None
         rows.append(
             (
                 record.name,
-                packages[int(match[1])],
                 type(record.state).__name__.lower(),
                 "" if error is None else str(error).splitlines()[0],
             )
@@ -56,7 +44,6 @@ async def health(ctx: Context):
     """Publish the node's health once ready and then every startup budget, as 0.2 did.
 
     Two beats missed tell a consumer the node is gone."""
-    configuration = ctx.accept(CONFIGURATION)
     audit = ctx.accept(AUDIT)
     timer = ctx.accept(TIMER)
 
@@ -67,10 +54,8 @@ async def health(ctx: Context):
                 context=AuditContext(agent_id=""),
                 payload={
                     "contribs": [
-                        dict(
-                            zip(("name", "package", "state", "error"), row, strict=True)
-                        )
-                        for row in _contribs(configuration, ctx.snapshots)
+                        dict(zip(("name", "state", "error"), row, strict=True))
+                        for row in _contribs(ctx.snapshots)
                     ],
                     "version": await asyncio.to_thread(version, "bazaar-compute-node"),
                     "python": sys.version.split()[0],
@@ -99,8 +84,8 @@ async def _run(ctx: Context, configuration: Configuration) -> None:
         await asyncio.to_thread(
             click.echo,
             table(
-                _contribs(configuration, ctx.snapshots),
-                ("Contrib", "Package", "State", "Result"),
+                _contribs(ctx.snapshots),
+                ("Contrib", "State", "Result"),
             ),
         )
         await asyncio.to_thread(click.echo, "bcn ready")
@@ -128,4 +113,4 @@ command_entry = CommandEntry(
     help="Run the node, serving until it is stopped.",
 )
 management = Contrib(accepts=[COMMANDS, CONFIGURATION], lifespan=lifespan)
-node_health = Contrib(accepts=[CONFIGURATION, AUDIT, TIMER], lifespan=health)
+node_health = Contrib(accepts=[AUDIT, TIMER], lifespan=health)

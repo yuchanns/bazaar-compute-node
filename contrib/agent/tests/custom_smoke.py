@@ -31,9 +31,7 @@ async def exercise(path: Path):
         [
             ContribSpec(contrib="audit"),
             ContribSpec(contrib="storage"),
-            ContribSpec(
-                contrib="sqlite", config={"path": str(path / "editor.sqlite3")}
-            ),
+            ContribSpec(contrib="sqlite", config={"name": "editor.sqlite3"}),
             ContribSpec(contrib="database", config={"backend": "sqlite"}),
             ContribSpec(contrib="schema"),
             ContribSpec(contrib="legacy-node-migrations"),

@@ -70,7 +70,8 @@ async def invoke(options: dict[str, Any], action) -> Any:
         result = await action(selected[0])
         completed = time.monotonic()
     name = result.kind if isinstance(result, Operation) else "query"
-    print(
+    await asyncio.to_thread(
+        print,
         f"Manager {name}: startup {ready - started:.2f}s, "
         f"action {completed - ready:.2f}s, shutdown {time.monotonic() - completed:.2f}s",
         flush=True,
@@ -105,7 +106,9 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         return result
 
     async def cli(*arguments: str, config: Path = config):
-        print("bcn --config", config, "contrib", *arguments, flush=True)
+        await asyncio.to_thread(
+            print, "bcn --config", config, "contrib", *arguments, flush=True
+        )
         process = await asyncio.create_subprocess_exec(
             sys.executable,
             "-m",
@@ -118,11 +121,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             stderr=asyncio.subprocess.PIPE,
         )
         output, errors = await process.communicate()
-        print((output + errors).decode(), end="", flush=True)
+        await asyncio.to_thread(print, (output + errors).decode(), end="", flush=True)
         assert process.returncode == 0, (output + errors).decode()
         return output.decode(), errors.decode()
 
-    print("Read installed manager catalogs", flush=True)
+    await asyncio.to_thread(print, "Read installed manager catalogs", flush=True)
     initial = await checked(lambda manager: manager.catalog.indexes())
     assert any(index.entries for index in initial)
     current = tomllib.loads(await asyncio.to_thread(config.read_text))
@@ -198,7 +201,9 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         package = await manager.catalog.select("example", source=source)
         return await manager.add(package)
 
-    print("Install example from its local package index", flush=True)
+    await asyncio.to_thread(
+        print, "Install example from its local package index", flush=True
+    )
     added = await checked(install)
     assert added.installed and added.config_saved
     detail = await checked(lambda manager: manager.detail("example"))
@@ -236,14 +241,17 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         await store.write(payload, expected_revision=snapshot.revision)
     await cli("sync")
     current = await checked(lambda manager: manager.detail("example"))
-    print(
+    await asyncio.to_thread(
+        print,
         f"Normal sync selected {current.version}; previous version {version}",
         flush=True,
     )
     await cli("sync", "--upgrade")
     detail = await checked(lambda manager: manager.detail("example"))
     assert Version(detail.version) > version
-    print(f"Explicit upgrade selected {detail.version}", flush=True)
+    await asyncio.to_thread(
+        print, f"Explicit upgrade selected {detail.version}", flush=True
+    )
     document = ConfigDocument.model_validate(
         tomllib.loads(await asyncio.to_thread(config.read_text))
     )
@@ -609,7 +617,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             path / "registry" / "one" / "simple" / "bazaar-compute-node" / "index.html"
         )
         digest = sha256(await asyncio.to_thread(wheel.read_bytes)).hexdigest()
-        print(f"Publish host {versions['target']} into the cached index", flush=True)
+        await asyncio.to_thread(
+            print,
+            f"Publish host {versions['target']} into the cached index",
+            flush=True,
+        )
         await asyncio.to_thread(
             index.write_text,
             await asyncio.to_thread(index.read_text)
@@ -621,7 +633,9 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         )
         host = await manager.detail("bazaar-compute-node")
         assert Version(host.version) > Version(versions["current"])
-        print(f"Host upgrade installed {host.version}", flush=True)
+        await asyncio.to_thread(
+            print, f"Host upgrade installed {host.version}", flush=True
+        )
         candidate, _ = await manager.configuration.read()
         assert any(
             entry["config"].get("label") == "edited"
@@ -642,7 +656,9 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         )
         return await manager.add(package)
 
-    print("Change installed example package source", flush=True)
+    await asyncio.to_thread(
+        print, "Change installed example package source", flush=True
+    )
     replaced = await checked(change_source)
     assert replaced.installed
     detail = await checked(lambda manager: manager.detail("example"))
@@ -685,7 +701,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     prefix = migrated / ("tools/bazaar-compute-node" if tool else "environment")
 
     async def launch(*arguments: str):
-        print("Run", *arguments, flush=True)
+        await asyncio.to_thread(print, "Run", *arguments, flush=True)
         process = await asyncio.create_subprocess_exec(
             *arguments,
             env=environment,
@@ -694,7 +710,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             stderr=asyncio.subprocess.PIPE,
         )
         output, errors = await process.communicate()
-        print((output + errors).decode(), end="", flush=True)
+        await asyncio.to_thread(print, (output + errors).decode(), end="", flush=True)
         assert process.returncode == 0, (output + errors).decode()
         return output.decode()
 
@@ -914,7 +930,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     )
     assert protected.error and protected.phase == "failed"
     assert (await checked(lambda manager: manager.detail("example-carrier"))).entries
-    print("Remove installed example packages", flush=True)
+    await asyncio.to_thread(print, "Remove installed example packages", flush=True)
     removed = await checked(lambda manager: manager.remove("bazaar-contrib-example"))
     assert removed.installed
     await checked(lambda manager: manager.remove("bazaar-contrib-example-carrier"))
