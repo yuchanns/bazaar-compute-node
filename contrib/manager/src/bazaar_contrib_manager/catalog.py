@@ -108,7 +108,7 @@ class ContribCatalog:
         return Package(
             package=selected[0].package,
             source=selected[0].source,
-            version=version or selected[0].version,
+            version=version,
         )
 
 

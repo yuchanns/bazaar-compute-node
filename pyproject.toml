@@ -33,7 +33,6 @@ bazaar-contrib-audit = { workspace = true }
 bazaar-contrib-channel = { workspace = true }
 bazaar-contrib-harness = { workspace = true }
 bazaar-contrib-storage = { workspace = true }
-bazaar-contrib-sqlite = { workspace = true }
 bazaar-contrib-schema = { workspace = true }
 bazaar-contrib-legacy-node-migrations = { workspace = true }
 bazaar-contrib-messages = { workspace = true }
@@ -41,17 +40,12 @@ bazaar-contrib-messages-node = { workspace = true }
 bazaar-contrib-collaboration = { workspace = true }
 bazaar-contrib-reminder = { workspace = true }
 bazaar-contrib-timer = { workspace = true }
-bazaar-contrib-timer-wheel = { workspace = true }
 bazaar-contrib-config = { workspace = true }
-bazaar-contrib-config-filesystem = { workspace = true }
 bazaar-contrib-config-versions = { workspace = true }
-bazaar-contrib-logging = { workspace = true }
 bazaar-contrib-manager = { workspace = true }
 bazaar-contrib-invoke = { workspace = true }
 bazaar-contrib-node-management = { workspace = true }
 bazaar-contrib-sidecar = { workspace = true }
-bazaar-contrib-sidecar-unix = { workspace = true }
-bazaar-contrib-sidecar-windows = { workspace = true }
 bcn-test-support = { path = "tests/support", editable = true }
 
 [tool.uv.workspace]

@@ -4,7 +4,7 @@
 
 BCN 的业务能力、平台 provider、存储查询、控制入口和界面扩展都通过公共模块范式装配。
 所有组合使用同一个宿主和 `bcn run`：`bazaar-contrib-server` 提供服务端组合，`bazaar-contrib-starlink` 提供节点连接，`bazaar-contrib-web` 依赖 server 提供页面。
-应用入口、核心框架及默认运行必需的 contrib 留在 BCN 仓库，各包分别构建 wheel，以同一版本发行，首版为 `0.3.0`。
+应用入口、核心框架、公共契约与节点业务 contrib 留在 BCN 仓库，各包分别构建 wheel，以同一版本发行，首版为 `0.3.0`。
 具体 provider、server／web 及服务端迁移等官方可选 contrib 在 open-bazaar 的独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
 `open-bazaar/contrib-server` 中的 `bazaar-contrib-server` 是同一个插件包，持有 `server-migrations` 及按阶段交付的 `server`／`server-api` 入口。
 从 `0.3` 开始，Bazaar Compute Node 及本仓库官方发行包使用 Apache License 2.0，各包携带许可证全文与 `Apache-2.0` 发行元数据。
@@ -323,7 +323,7 @@ Contrib 声明的公共 API 范围供加载边界复核。
 0.3.x 维护已公开的 0.3 框架契约，破坏性契约调整进入新的兼容边界；依赖范围外的组合在安装解析与启动校验时诊断。
 
 固定发行名、目录、入口与默认／可选归属见 [路线图的拆包清单](roadmap.md#发行包模块入口与内置组合)。
-app、core、公共接口和默认节点包留在 BCN 共同发行，可选包在 open-bazaar 独立维护；channel 与 harness 两个公共接口包各附带共享 builder 注册入口。
+app、core、公共接口和节点业务包留在 BCN 共同发行；默认组合使用的 SQLite、时间轮、文件配置、原生 sidecar 传输与日志实现按下文的迁仓任务在 open-bazaar 独立维护。channel 与 harness 两个公共接口包各附带共享 builder 注册入口。
 config 载体和五版服务先于完整业务文档装配；storage 提供 storage 与 database 两个运行入口。
 server／web 保持可选安装；BCS 组合直接读取自己的 ~/.bcs/config.toml、bcs.sqlite3 与 session.key，
 保留原配置结构、账户、权限、历史数据、已发布迁移及旧节点协议。
@@ -653,3 +653,107 @@ Agent 完整安装态验收 Linux／Windows 各 1 项（319.89／398.25 秒）�
 消息、提醒、协作、命令以及双系统 manager、配置任务均成功。
 完整日志 ZIP 已下载并通过 CRC 校验，逐任务核对实际 checkout 提交，未重复计入分步日志。
 本次结果回填仅更新原计划，生产代码、测试和依赖内容与上述实际验收版本保持一致。
+
+## 2026-10-29 默认实现迁仓
+
+按消息 `1e713b2e-af21-57f2-a322-23b0ef3e297c` 与 `19b120c1-d344-5db8-bf09-eef9a189e438`，
+将已选定的前五组实现迁到六个独立仓库；两种 sidecar 传输分别维护。
+消息 `6fcbeeef-0f6c-5809-bbbb-f992983f159a` 进一步要求收齐六包独立 rc、contrib-index 登记和主仓 rc，主仓最后发行以取得新索引。
+基线为 `0.3` 的 `1dbe0e6d44d101603fc99b930a8ad85a0044a672`，六个包当前均已在 PyPI 发布 `0.3.0rc9`。
+
+| 发行包 | 独立仓库 | 主仓继续提供的契约 |
+| --- | --- | --- |
+| bazaar-contrib-sqlite | open-bazaar/contrib-sqlite | storage 的 Database、Session、查询与后端注册；schema 的业务迁移管理 |
+| bazaar-contrib-timer-wheel | open-bazaar/contrib-timer-wheel | timer 的 Timer、TimerHandle、TIMER 及通用等待操作 |
+| bazaar-contrib-config-filesystem | open-bazaar/contrib-config-filesystem | config 的 ConfigStore、CONFIG_STORE、配置服务与版本链 |
+| bazaar-contrib-sidecar-unix | open-bazaar/contrib-sidecar-unix | sidecar 的 SERVER、CLIENT、流协议与通用调用 |
+| bazaar-contrib-sidecar-windows | open-bazaar/contrib-sidecar-windows | 同一 sidecar 公共契约 |
+| bazaar-contrib-logging | open-bazaar/contrib-logging | audit 的事件契约及 core 的调用来源上下文 |
+
+六个仓库保持发行名、Python 模块名、入口名、配置和现有实现。各自携带普通 LICENSE 文件、源码、资源、
+使用说明、现有真实测试、独立工具配置和 uv.lock；Repository 元数据指向各自的新仓库。
+生产依赖沿用实际消费的公共包范围，测试所需的时间轮、应用、aiofiles 等放在各自 dev 依赖。
+
+原 sidecar 安装测试由 `tests/support/src/bcn_sidecar_test` 在主 workspace 构建整套 app；
+迁出后的两仓保留原安装消费者、native_edges、TCP 示例和四项真实场景，安装 fixture 改为构建本仓产物与示例，
+从 PyPI 安装 app 和其他已发布依赖。Unix 在 Linux、macOS 执行，Windows 命名管道在 Windows 执行。
+其余四仓沿用各包已有文件、数据库、计时与日志业务测试。测试在临时 HOME、BCN_HOME 与隔离进程运行，
+异步阻塞检查沿用主仓 ci_pytest 入口；原生 system-service 验收仍仅在隔离 CI runner 执行。
+
+各仓 Release 使用单个 version 输入，固定发行提交和 wheel／sdist 及 SHA-256 清单，
+安装验证完成后通过 GitHub OIDC 上传同一批文件，核对 PyPI 文件和干净安装，再推 annotated 标签。
+沿用主仓规则，仅正式版生成 CHANGELOG.md。已有 rc9 的文件不可覆盖，新仓首次发行使用下一未占用版本 rc10。
+每个项目的 PyPI Trusted Publisher 对应自己的 `open-bazaar/contrib-*`、`release.yml` 和 `pypi` 环境。
+先添加新绑定，完成主仓发行集合切换后再移除旧主仓绑定，避免迁仓中断当前发行。
+
+app 的 config-filesystem 自举依赖继续指向同名发行包，defaults.toml 的默认入口、OS 条件与配置保持原样。
+迁出后六包退出主 workspace、共同版本准备和共同发布集合；主仓 dev 组保持拆分前的内容。
+六个源码仓与 Codex 一样，通过外层 bcn-dev 的 editable path source 联调。实现专属测试跟随所属实现迁仓；
+主仓业务验收从默认配置启动，由 manager 自动恢复配置声明的依赖，通过公开服务使用实现。
+manager 的随包官方目录由剩余 workspace 成员生成，六个独立包登记到 contrib-index，随 manager 的第二份索引快照发行。
+索引仅登记包名和来源；按 review 移除主仓索引契约、缓存、列表及选择逻辑中的版本字段，安装要求由用户配置决定。
+独立包版本要求保持自己的兼容范围，主仓后续升版不再改写这些独立包的版本要求。
+
+### 交付安排
+
+消息 `a9a73381-c991-5a3d-abc9-a0869dab8864` 授权一次完成各仓代码变更和 PR，统一交付验证结果与固定提交供 review。
+六个实现的生产源码与资源保持基线原样，主仓保留原默认组合、入口与平台条件。
+
+- [x] Task 1：建立六个独立仓库，迁入原实现、资源与真实测试，完成独立依赖、构建、CI 和 Release；
+  配置各仓 pypi 环境并添加对应 PyPI 发布者，交付六仓检查结果供 review。
+- [x] Task 2：从主仓移除六个实现成员与 workspace source，恢复主仓开发依赖边界、调整外层联调来源、共同发行范围及官方索引；
+  用外部产物验证全新安装、自举、默认组合和相关消费者，执行根目录 Ruff、Pyright/LSP，提交主仓和索引变更供 review，并由 PR 执行三平台 CI。
+- [ ] Task 3：在 review 与三平台 CI 通过后从独立仓库发布新候选版本，核对源码提交、文件校验值、真实包源安装与标签；
+  合入已经登记六包的 contrib-index，核对主仓发行快照实际包含全部独立包后，从 `0.3` 最后发布主仓新 rc；
+  移除六个项目原主仓 Trusted Publisher，核对各项目仅由对应新仓发行，并记录跨仓组合所用版本与提交。
+
+### Task 1 验收
+
+| 独立仓库 | 固定提交 | CI |
+| --- | --- | --- |
+| [sqlite](https://github.com/open-bazaar/contrib-sqlite) | [03ea7be](https://github.com/open-bazaar/contrib-sqlite/commit/03ea7be8e792dff5f72126b87510658c686e078d) | [通过](https://github.com/open-bazaar/contrib-sqlite/actions/runs/40908202024) |
+| [timer-wheel](https://github.com/open-bazaar/contrib-timer-wheel) | [fac2cdc](https://github.com/open-bazaar/contrib-timer-wheel/commit/fac2cdcd2e593c35bfaf1b808878094e88a05c87) | [通过](https://github.com/open-bazaar/contrib-timer-wheel/actions/runs/40908210742) |
+| [config-filesystem](https://github.com/open-bazaar/contrib-config-filesystem) | [a59c7f7](https://github.com/open-bazaar/contrib-config-filesystem/commit/a59c7f7e9def91a91bb0a50462d14482d5dccd29) | [通过](https://github.com/open-bazaar/contrib-config-filesystem/actions/runs/40908220764) |
+| [sidecar-unix](https://github.com/open-bazaar/contrib-sidecar-unix) | [d7ef540](https://github.com/open-bazaar/contrib-sidecar-unix/commit/d7ef5403213a06b380d517f57ca5d157390c6586) | [通过](https://github.com/open-bazaar/contrib-sidecar-unix/actions/runs/40908229270) |
+| [sidecar-windows](https://github.com/open-bazaar/contrib-sidecar-windows) | [4458eef](https://github.com/open-bazaar/contrib-sidecar-windows/commit/4458eefc9e236d2fd823b158bceb8319a5f40ee9) | [通过](https://github.com/open-bazaar/contrib-sidecar-windows/actions/runs/40908238850) |
+| [logging](https://github.com/open-bazaar/contrib-logging) | [bc249d8](https://github.com/open-bazaar/contrib-logging/commit/bc249d80916bc6708d5d9b84fb975503f22ee483) | [通过](https://github.com/open-bazaar/contrib-logging/actions/runs/40908250776) |
+
+六仓共 40 个生产文件与基线源码逐字节相同。Linux 现有业务测试共 41 项通过；六仓静态检查、wheel／sdist 构建与安装验证通过，Windows 命名管道和 macOS Unix 连接由各自 CI 验证。
+六个 GitHub pypi 环境和对应 PyPI 发布者均已创建；旧主仓发布者保留到发行集合切换完成。上述初次验收时各仓版本为 rc9，独立候选发行结果记录在下文。
+
+
+### Task 2 代码与本地验收
+
+主 workspace 与共同发行集合由 28 包变为 22 包，主仓 dev 依赖列表与拆分前相同。
+app 的 config-filesystem 自举依赖、defaults.toml 与平台选择保持原样。
+源码联调在外层 bcn-dev 引用六个独立源码仓；主仓安装验收从默认配置恢复独立发行实现。
+实际安装的六包共 40 个生产文件与迁出的基线逐字节一致，全部插件入口可加载。
+
+manager 生成的主仓官方目录包含 20 包；与候选社区索引的六包合并后，完整保留原来的 26 个 contrib 条目。
+六项登记只包含包名和 PyPI 来源，见
+[contrib-index PR #1](https://github.com/open-bazaar/contrib-index/pull/1)，固定签名提交
+[a057edc](https://github.com/open-bazaar/contrib-index/commit/a057edc30fb9a2b522c32c83136a2fe842aae462)，索引 CI 已通过并合入。
+主仓 IndexEntry 与安装要求 Package 分开；索引文档、缓存和聚合条目不含 version，CLI 只显示包名和来源。
+安装版本仅来自用户输入及保存的依赖要求，删除从索引条目回退版本的逻辑。
+索引契约修订后的四项 manager 安装／升级回归全部通过（351.84 秒）；manager 的 wheel／sdist 独立安装通过，产物内官方 20 条与社区 6 条均只有包名和来源。
+本轮五个 Python 文件的 Ruff 格式及 lint、仓库根目录 Pyright/LSP 通过。
+
+安装验收先安装被测主仓产物及测试提供者，再由正常应用入口读取默认配置、自动恢复未安装的依赖。
+本地测试源只包含本仓构建的发行包，独立实现从 PyPI 解析。测试不手工镜像或额外预装六个迁出实现。
+Schema、历史迁移与节点运行的业务用例同样在 wheel／sdist 的独立环境执行，避免依赖恢复修改主仓开发环境。
+原生 sidecar 验收和 TCP 示例只保留在所属独立仓；主仓消费者从默认组合取得服务，并添加自己的公开测试插件。
+README 中配置示例使用 `==0.3.*`，Unix／Windows 传输声明各自的平台条件。
+
+本轮十包安装态验收共 14 项通过，覆盖 wheel／sdist、venv／uv tool、运行和升级路径。
+其中 Schema、历史迁移、节点运行的 42 个业务用例分别在 wheel 与 sdist 中执行，共 84 次通过。
+变更 Python 文件的 Ruff 格式与 lint 检查、仓库根目录 Pyright/LSP 通过。六个迁出实现的 40 个生产文件再次核对与基线一致。
+
+主仓代码与索引登记统一交付 review；[主仓 PR #127](https://github.com/yuchanns/bazaar-compute-node/pull/127)
+继续运行三平台 CI。六包独立候选发行、索引合入、主仓候选及旧发布者移除按 Task 3 的顺序完成。
+
+### Task 3 已完成的独立发行与索引
+
+六个独立仓库均已发布 `0.3.0rc10`，各仓 Release 的检查、三平台安装验证、PyPI 上传与核验、标签步骤全部成功。
+实际下载 PyPI wheel／sdist，核对文件 SHA-256、README 与全部 40 个生产文件；干净环境安装六包并加载入口通过。
+各仓 annotated `v0.3.0rc10` 指向对应固定发行提交，发行准备仅变更版本及锁。
+社区索引在六包发布后合入 [246e49a](https://github.com/open-bazaar/contrib-index/commit/246e49a)，包含六条无版本约束的包名／来源记录。

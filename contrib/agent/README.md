@@ -12,7 +12,7 @@ The corresponding entry in `config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-agent~=0.3.0rc1"
+package = "bazaar-contrib-agent==0.3.*"
 [[contribs.enabled]]
 entry = "agent-execution"
 [[contribs.enabled]]

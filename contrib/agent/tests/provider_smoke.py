@@ -15,6 +15,7 @@ from typing import Any, cast
 from uuid import uuid7
 
 import aiofiles
+from bazaar_compute_node.boot import node
 from bazaar_contrib_audit import AUDIT_EVENT, AuditEvent
 from bazaar_contrib_channel import (
     ChannelApprovalRequest,
@@ -32,6 +33,7 @@ from bazaar_contrib_harness import (
 from bazaar_core import (
     CONTRIB_CHANGED,
     Blocked,
+    Composition,
     Context,
     Contrib,
     ContribChange,
@@ -606,11 +608,6 @@ async def runtime_failures(peer: Peer, draft: Path):
 async def exercise(path: Path):
     inspection = await HarnessBuilderParameters.builder().inspect(path, timeout=30)
     assert inspection.available and inspection.version and inspection.skills
-    endpoint = (
-        str(path / "sidecar.sock")
-        if os.name != "nt"
-        else "\\\\.\\pipe\\bcn-agent-" + str(uuid7())
-    )
     await asyncio.to_thread(path.mkdir)
     workspaces = {name: path / name for name in ("Cloud", "Tifa", "Barret")}
     drafts = {}
@@ -625,22 +622,6 @@ async def exercise(path: Path):
     composition = await asyncio.to_thread(
         load,
         [
-            ContribSpec(contrib="audit"),
-            ContribSpec(contrib="sidecar"),
-            ContribSpec(
-                contrib="sidecar-windows" if os.name == "nt" else "sidecar-unix",
-                config={"endpoint": endpoint},
-            ),
-            ContribSpec(contrib="storage"),
-            ContribSpec(contrib="sqlite", config={"name": "providers.sqlite3"}),
-            ContribSpec(contrib="database", config={"backend": "sqlite"}),
-            ContribSpec(contrib="schema"),
-            ContribSpec(contrib="legacy-node-migrations"),
-            ContribSpec(contrib="timer-wheel"),
-            ContribSpec(contrib="messages-node"),
-            ContribSpec(contrib="collaboration"),
-            ContribSpec(contrib="reminder"),
-            ContribSpec(contrib="agent-execution"),
             ContribSpec(
                 contrib="agent",
                 config={
@@ -677,14 +658,12 @@ async def exercise(path: Path):
                     ]
                 },
             ),
-            ContribSpec(contrib="channel-builders"),
-            ContribSpec(contrib="harness-builders"),
             ContribSpec(contrib="test-channel-builder"),
             ContribSpec(contrib="secondary-channel-builder"),
             ContribSpec(contrib="document-builder"),
         ],
     )
-    composition = await configured(path / "config.toml", composition)
+
     ready = asyncio.Event()
     registries: list[AgentInstances] = []
     persisted: asyncio.Queue[AuditEvent] = asyncio.Queue()
@@ -708,6 +687,7 @@ async def exercise(path: Path):
         async with lock, aiofiles.open(path / "audit.jsonl", "a") as stream:
             await stream.write(event.model_dump_json() + "\n")
 
+    composition = await configured(path / "config.toml", composition)
     composition = composition.model_copy(
         update={
             "entries": (
@@ -726,7 +706,9 @@ async def exercise(path: Path):
         }
     )
     async with AsyncExitStack() as peers:
-        async with ContribHub() as hub:
+        async with node(
+            configer_options=(str(path / "config.toml"),), start=lambda _: Composition()
+        ) as hub:
 
             async def applied():
                 await registries[0].wait_applied()
@@ -745,7 +727,7 @@ async def exercise(path: Path):
                 await inbound_context(
                     connected["Cloud"],
                     drafts["Cloud"],
-                    Path(os.environ["BCN_HOME"]) / ".bcn" / "providers.sqlite3",
+                    Path(os.environ["BCN_HOME"]) / ".bcn" / "bcn.sqlite3",
                     persisted,
                 )
                 for name, peer in connected.items():
@@ -755,7 +737,7 @@ async def exercise(path: Path):
                             peer,
                             drafts[name],
                             session,
-                            Path(os.environ["BCN_HOME"]) / ".bcn" / "providers.sqlite3",
+                            Path(os.environ["BCN_HOME"]) / ".bcn" / "bcn.sqlite3",
                             persisted,
                         )
                     await turn_failure(peer, drafts[name], session)

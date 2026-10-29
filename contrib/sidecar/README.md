@@ -14,19 +14,19 @@ The corresponding entries in `config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-sidecar~=0.3.0rc1"
+package = "bazaar-contrib-sidecar==0.3.*"
 [[contribs.enabled]]
 entry = "sidecar"
 
 [[contribs]]
-package = "bazaar-contrib-sidecar-unix~=0.3.0rc1; sys_platform != 'win32'"
+package = "bazaar-contrib-sidecar-unix==0.3.*; sys_platform != 'win32'"
 [[contribs.enabled]]
 entry = "sidecar-unix"
 [contribs.enabled.config]
 timeout = 30
 
 [[contribs]]
-package = "bazaar-contrib-sidecar-windows~=0.3.0rc1; sys_platform == 'win32'"
+package = "bazaar-contrib-sidecar-windows==0.3.*; sys_platform == 'win32'"
 [[contribs.enabled]]
 entry = "sidecar-windows"
 [contribs.enabled.config]

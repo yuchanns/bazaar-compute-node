@@ -13,6 +13,7 @@ from pathlib import Path
 from bazaar_compute_node.boot import node
 from bazaar_contrib_config import ConfigDocument, Configuration
 from bazaar_contrib_config_filesystem import FileConfigStore
+from packaging.requirements import Requirement
 
 from bazaar_contrib_manager import Operation
 
@@ -64,6 +65,18 @@ async def exercise(path: Path, source: str):
         ),
     )
     payload["contrib_indexes"] = [str(catalog)]
+    official = json.loads(
+        await asyncio.to_thread(
+            files("bazaar_contrib_manager").joinpath("catalog.json").read_text
+        )
+    )
+    packages = {entry["package"] for entry in official["contribs"]}
+    for package in payload["contribs"]:
+        package["source"] = (
+            source
+            if Requirement(package["package"]).name in packages
+            else "https://pypi.org/simple"
+        )
     manager = next(
         entry
         for package in payload["contribs"]

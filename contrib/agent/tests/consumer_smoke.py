@@ -10,12 +10,12 @@ from tempfile import TemporaryDirectory
 
 import aiofiles
 from aiofiles.threadpool.text import AsyncTextIOWrapper
+from bazaar_compute_node.boot import node
 from bazaar_core import (
     Composition,
     Context,
     Contrib,
     ContribEntry,
-    ContribHub,
     ContribSpec,
     Running,
     ServiceKey,
@@ -67,25 +67,12 @@ async def exercise(path: Path):
         composition = await asyncio.to_thread(
             load,
             [
-                ContribSpec(contrib="audit"),
-                ContribSpec(contrib="storage"),
-                ContribSpec(contrib="sqlite", config={"name": "agent.sqlite3"}),
-                ContribSpec(contrib="database", config={"backend": "sqlite"}),
-                ContribSpec(contrib="schema"),
-                ContribSpec(contrib="legacy-node-migrations"),
-                ContribSpec(contrib="timer-wheel"),
-                ContribSpec(contrib="messages-node"),
-                ContribSpec(contrib="collaboration"),
-                ContribSpec(contrib="reminder"),
-                ContribSpec(contrib="channel-builders"),
-                ContribSpec(contrib="harness-builders"),
                 ContribSpec(contrib="test-channel-builder"),
                 ContribSpec(contrib="document-builder"),
-                ContribSpec(contrib="agent-execution"),
                 ContribSpec(contrib="agent", config=config),
             ],
         )
-        composition = await configured(path / "consumer.toml", composition)
+
         composition = composition.model_copy(
             update={
                 "entries": (
@@ -97,7 +84,11 @@ async def exercise(path: Path):
                 )
             }
         )
-        async with ContribHub() as hub, hub.enable(composition):
+        composition = await configured(path / "consumer.toml", composition)
+        async with node(
+            configer_options=(str(path / "consumer.toml"),),
+            start=lambda _, composition=composition: composition,
+        ) as hub:
             await services[-1].wait_applied()
             for name in ("Cloud", "Tifa"):
                 assert any(
@@ -112,21 +103,13 @@ async def exercise(path: Path):
     composition = await asyncio.to_thread(
         load,
         [
-            ContribSpec(contrib="audit"),
-            ContribSpec(contrib="storage"),
-            ContribSpec(contrib="sqlite", config={"name": "empty.sqlite3"}),
-            ContribSpec(contrib="database", config={"backend": "sqlite"}),
-            ContribSpec(contrib="schema"),
-            ContribSpec(contrib="legacy-node-migrations"),
-            ContribSpec(contrib="timer-wheel"),
-            ContribSpec(contrib="messages-node"),
-            ContribSpec(contrib="collaboration"),
-            ContribSpec(contrib="reminder"),
-            ContribSpec(contrib="agent-execution"),
             ContribSpec(contrib="agent"),
         ],
     )
-    async with ContribHub() as hub, hub.enable(composition):
+    composition = await configured(path / "consumer.toml", composition)
+    async with node(
+        configer_options=(str(path / "consumer.toml"),), start=lambda _: composition
+    ) as hub:
         assert await asyncio.to_thread(default.is_dir)
 
     journals: dict[str, AsyncTextIOWrapper] = {}
@@ -181,23 +164,21 @@ async def exercise(path: Path):
             await ctx.accept(REPORT).write("shared continues\n")
             yield
 
-    async with (
-        ContribHub() as hub,
-        hub.enable(
-            Composition(
-                entries=[
-                    *composition.entries,
-                    ContribEntry(
-                        name="shared",
-                        definition=Contrib(offers=[REPORT], lifespan=shared),
-                    ),
-                    ContribEntry(
-                        name="controller",
-                        definition=Contrib(accepts=[REPORT], lifespan=control),
-                    ),
-                ]
-            )
-        ),
+    controlled = Composition(
+        entries=[
+            *composition.entries,
+            ContribEntry(
+                name="shared",
+                definition=Contrib(offers=[REPORT], lifespan=shared),
+            ),
+            ContribEntry(
+                name="controller",
+                definition=Contrib(accepts=[REPORT], lifespan=control),
+            ),
+        ]
+    )
+    async with node(
+        configer_options=(str(path / "consumer.toml"),), start=lambda _: controlled
     ):
         assert await asyncio.to_thread(instances["Cloud"].workspace.samefile, default)
         assert await asyncio.to_thread(instances["Tifa"].workspace.samefile, project)

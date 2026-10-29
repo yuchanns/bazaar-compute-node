@@ -24,11 +24,10 @@ SOURCE = TypeAdapter(
 )
 
 
-class Package(BaseModel):
+class IndexEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     package: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")]
     source: str
-    version: str = ""
 
     @field_validator("package")
     @classmethod
@@ -41,6 +40,10 @@ class Package(BaseModel):
         SOURCE.validate_python(value)
         return value
 
+
+class Package(IndexEntry):
+    version: str = ""
+
     @field_validator("version")
     @classmethod
     def specifier(cls, value: str) -> str:
@@ -48,13 +51,13 @@ class Package(BaseModel):
         return value
 
 
-class CatalogEntry(Package):
+class CatalogEntry(IndexEntry):
     indexes: tuple[str, ...] = ()
 
 
 class IndexDocument(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    contribs: tuple[Package, ...]
+    contribs: tuple[IndexEntry, ...]
 
 
 class IndexStatus(BaseModel):
@@ -63,7 +66,7 @@ class IndexStatus(BaseModel):
     read_at: str | None = None
     cached: bool = False
     error: str | None = None
-    entries: tuple[Package, ...] = ()
+    entries: tuple[IndexEntry, ...] = ()
 
 
 class EntryInfo(BaseModel):

@@ -20,17 +20,13 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
             "bazaar-contrib-audit",
             "bazaar-contrib-channel",
             "bazaar-contrib-timer",
-            "bazaar-contrib-timer-wheel",
             "bazaar-contrib-harness",
-            "bazaar-contrib-logging",
             "bazaar-contrib-status",
             "bazaar-contrib-config",
-            "bazaar-contrib-config-filesystem",
             "bazaar-contrib-config-versions",
             "bazaar-contrib-manager",
             "bazaar-contrib-invoke",
             "bazaar-contrib-storage",
-            "bazaar-contrib-sqlite",
             "bazaar-contrib-schema",
             "bazaar-contrib-legacy-node-migrations",
             "bazaar-contrib-messages",
@@ -39,8 +35,6 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
             "bazaar-contrib-reminder",
             "bazaar-contrib-node-management",
             "bazaar-contrib-sidecar",
-            "bazaar-contrib-sidecar-unix",
-            "bazaar-contrib-sidecar-windows",
             "bazaar-compute-node",
         ):
             subprocess.run(
@@ -98,6 +92,8 @@ async def test_installed_node_uses_files_and_a_persistent_remote_carrier(
     executable = await asyncio.to_thread(build)
     command = [
         str(executable),
+        str(root / "tests/run_installed.py"),
+        str(artifacts),
         str(Path(__file__).with_name("configuration_smoke.py")),
         str(tmp_path),
     ]

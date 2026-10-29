@@ -8,6 +8,7 @@ lazy from .catalog import CONTRIB_CATALOG, ContribCatalog
 lazy from .contracts import (
     CatalogEntry,
     EntryInfo,
+    IndexEntry,
     IndexStatus,
     InstalledPackage,
     ManagementError,
@@ -24,6 +25,7 @@ __all__ = [
     "ContribCatalog",
     "ContribManager",
     "EntryInfo",
+    "IndexEntry",
     "IndexStatus",
     "InstalledPackage",
     "ManagementError",

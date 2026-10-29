@@ -11,20 +11,23 @@ import sqlite3
 import sys
 import tomllib
 from contextlib import AsyncExitStack, asynccontextmanager, closing
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+import tomli_w
+from bazaar_compute_node.boot import build, node
+from bazaar_contrib_config import ConfigDocument
 from bazaar_contrib_config_filesystem import FileConfigStore
 from bazaar_contrib_sidecar import CLIENT, Client
 from bazaar_core import (
+    Composition,
     Context,
     Contrib,
     ContribEntry,
-    ContribHub,
-    ContribSpec,
-    load,
 )
 from blockbuster import blockbuster_ctx
+from packaging.requirements import Requirement
 
 
 async def exercise(path: Path, source: str, tests: Path):
@@ -82,6 +85,27 @@ async def exercise(path: Path, source: str, tests: Path):
             if entry["entry"] == "agent"
         )
 
+    payload = tomllib.loads(
+        await asyncio.to_thread(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text
+        )
+    )
+    official = json.loads(
+        await asyncio.to_thread(
+            files("bazaar_contrib_manager").joinpath("catalog.json").read_text
+        )
+    )
+    packages = {entry["package"] for entry in official["contribs"]}
+    for package in payload["contribs"]:
+        package["source"] = (
+            source
+            if Requirement(package["package"]).name in packages
+            else "https://pypi.org/simple"
+        )
+        for entry in package["enabled"]:
+            if entry["entry"] == "contrib-manager":
+                entry["config"] = {"host_source": source}
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     await cli("contrib", "configured")
     payload = await document()
     index = next(
@@ -231,28 +255,20 @@ async def exercise(path: Path, source: str, tests: Path):
             clients.append(ctx.accept(CLIENT))
             yield
 
-        composition = await asyncio.to_thread(
-            load,
-            [
-                ContribSpec(contrib="timer-wheel"),
-                ContribSpec(
-                    contrib="sidecar-windows" if os.name == "nt" else "sidecar-unix",
-                    config={"endpoint": endpoint},
-                ),
-            ],
-        )
-        composition = composition.model_copy(
-            update={
-                "entries": (
-                    *composition.entries,
-                    ContribEntry(
-                        name="review-control",
-                        definition=Contrib(accepts=[CLIENT], lifespan=consumer),
-                    ),
-                )
-            }
-        )
-        async with ContribHub() as hub, hub.enable(composition):
+        def select(document: ConfigDocument) -> Composition:
+            composition = build(document)
+            entry = ContribEntry(
+                name="review-control",
+                definition=Contrib(accepts=[CLIENT], lifespan=consumer),
+            )
+            return composition.model_copy(
+                update={
+                    "entries": (*composition.entries, entry),
+                    "roots": (entry.name,),
+                }
+            )
+
+        async with node(configer_options=(str(config),), start=select):
             yield clients[0]
 
     def select(query: str, *args: object) -> list[dict[str, Any]]:

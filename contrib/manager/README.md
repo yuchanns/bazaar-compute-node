@@ -15,7 +15,7 @@ The corresponding entry in `config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-manager~=0.3.0rc1"
+package = "bazaar-contrib-manager==0.3.*"
 [[contribs.enabled]]
 entry = "contrib-manager"
 ```

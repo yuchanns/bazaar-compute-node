@@ -7,8 +7,10 @@ import json
 import os
 import sqlite3
 import sys
+import tomllib
 from contextlib import asynccontextmanager, closing
 from importlib.metadata import distribution
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
@@ -144,7 +146,7 @@ class Peer:
 def stored_messages(directory: Path) -> dict[str, dict[str, Any]]:
     with closing(
         sqlite3.connect(
-            (directory / ".bcn" / "messages.sqlite3").as_uri() + "?mode=ro", uri=True
+            (directory / ".bcn" / "bcn.sqlite3").as_uri() + "?mode=ro", uri=True
         )
     ) as connection:
         connection.row_factory = sqlite3.Row
@@ -212,37 +214,22 @@ async def exercise(directory: Path):
     directory = await asyncio.to_thread(directory.resolve)
     installed = distribution("bazaar-contrib-messages-node")
     assert any(".dist-info/licenses/" in str(file) for file in installed.files or ())
-    endpoint = (
-        str(directory / "s") if os.name != "nt" else rf"\\.\pipe\bcn-messages-{uuid7()}"
-    )
     os.environ["BCN_HOME"] = str(directory)
-    native = "sidecar-windows" if os.name == "nt" else "sidecar-unix"
     config = directory / "config.toml"
-    await asyncio.to_thread(
-        config.write_text,
-        tomli_w.dumps(
-            {
-                "version": "5",
-                "contribs": [
-                    {"enabled": [{"entry": entry, "config": value}]}
-                    for entry, value in (
-                        ("commands", {}),
-                        ("storage", {}),
-                        ("sqlite", {"name": "messages.sqlite3"}),
-                        ("database", {"backend": "sqlite"}),
-                        ("schema", {}),
-                        ("legacy-node-migrations", {}),
-                        ("audit", {}),
-                        (native, {"endpoint": endpoint}),
-                        ("sidecar", {}),
-                        ("timer-wheel", {}),
-                        ("messages-node", {}),
-                        ("messages-gateway", {"directory": str(directory)}),
-                    )
-                ],
-            }
-        ),
+    payload = tomllib.loads(
+        await asyncio.to_thread(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text
+        )
     )
+    payload["contribs"].append(
+        {
+            "enabled": [
+                {"entry": "messages-gateway", "config": {"directory": str(directory)}}
+            ]
+        }
+    )
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
+
     clients: list[Client] = []
     configurations: list[Configuration] = []
     timers: list[Timer] = []

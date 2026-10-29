@@ -4,12 +4,12 @@ import asyncio
 import json
 from pathlib import Path
 
+from bazaar_compute_node.boot import node
 from bazaar_core import (
     CONTRIB_CHANGED,
     Context,
     Contrib,
     ContribEntry,
-    ContribHub,
     ContribSpec,
     load,
 )
@@ -29,19 +29,6 @@ async def exercise(path: Path):
     composition = await asyncio.to_thread(
         load,
         [
-            ContribSpec(contrib="audit"),
-            ContribSpec(contrib="storage"),
-            ContribSpec(contrib="sqlite", config={"name": "editor.sqlite3"}),
-            ContribSpec(contrib="database", config={"backend": "sqlite"}),
-            ContribSpec(contrib="schema"),
-            ContribSpec(contrib="legacy-node-migrations"),
-            ContribSpec(contrib="timer-wheel"),
-            ContribSpec(contrib="messages-node"),
-            ContribSpec(contrib="sidecar"),
-            ContribSpec(
-                contrib="sidecar-tcp",
-                config={"endpoint": str(path / "sidecar-port")},
-            ),
             ContribSpec(
                 contrib="editor-agent",
                 config={
@@ -54,7 +41,7 @@ async def exercise(path: Path):
             ),
         ],
     )
-    composition = await configured(path / "config.toml", composition)
+
     ready = asyncio.Event()
 
     def changed(ctx: Context, _):
@@ -70,7 +57,10 @@ async def exercise(path: Path):
             )
         }
     )
-    async with ContribHub() as hub, hub.enable(composition):
+    composition = await configured(path / "config.toml", composition)
+    async with node(
+        configer_options=(str(path / "config.toml"),), start=lambda _: composition
+    ) as hub:
         peer = await connect(path / "editor.json", ready, hub)
         try:
             saved = await report(peer, draft)

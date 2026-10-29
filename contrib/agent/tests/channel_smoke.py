@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from bazaar_compute_node.boot import node
 from bazaar_contrib_channel import (
     CHANNEL,
     CHANNEL_INPUT,
@@ -18,7 +19,8 @@ from bazaar_contrib_channel import (
     ChannelTarget,
 )
 from bazaar_contrib_timer import TIMER
-from bazaar_core import Context, Contrib, ContribEntry, ContribHub, ContribSpec, load
+from bazaar_core import Context, Contrib, ContribEntry, ContribSpec, load
+from bcn_agent_workbench import configured
 
 
 async def exercise(directory: Path):
@@ -43,9 +45,7 @@ async def exercise(directory: Path):
         )
         yield
 
-    composition = await asyncio.to_thread(
-        load, (ContribSpec(contrib="test-channel"), ContribSpec(contrib="timer-wheel"))
-    )
+    composition = await asyncio.to_thread(load, (ContribSpec(contrib="test-channel"),))
     composition = composition.model_copy(
         update={
             "entries": (
@@ -61,7 +61,10 @@ async def exercise(directory: Path):
             )
         }
     )
-    async with ContribHub() as hub, hub.enable(composition):
+    composition = await configured(directory / "config.toml", composition)
+    async with node(
+        configer_options=(str(directory / "config.toml"),), start=lambda _: composition
+    ):
         endpoint = json.loads(
             await asyncio.to_thread((directory / "channel.json").read_text)
         )

@@ -205,10 +205,7 @@ def create_commands(manager: ContribManager) -> click.Group:
             manager,
             lambda manager: manager.catalog.entries(),
             lambda packages: templates.get_template("entries.tpl").render(
-                rows=(
-                    (package.package, package.version or "*", package.source)
-                    for package in packages
-                ),
+                rows=((package.package, package.source) for package in packages),
             ),
         )
 

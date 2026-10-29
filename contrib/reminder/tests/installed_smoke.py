@@ -8,8 +8,10 @@ import os
 import re
 import sqlite3
 import sys
+import tomllib
 from contextlib import asynccontextmanager, closing
 from importlib.metadata import distribution
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import time_ns
@@ -136,7 +138,7 @@ async def node(config: Path):
 def rows(directory: Path, table: str) -> list[dict[str, Any]]:
     with closing(
         sqlite3.connect(
-            (directory / ".bcn" / "node.sqlite3").as_uri() + "?mode=ro", uri=True
+            (directory / ".bcn" / "bcn.sqlite3").as_uri() + "?mode=ro", uri=True
         )
     ) as database:
         database.row_factory = sqlite3.Row
@@ -205,43 +207,21 @@ async def exercise(directory: Path):
     directory = await asyncio.to_thread(directory.resolve)
     installed = distribution("bazaar-contrib-reminder")
     assert any(".dist-info/licenses/" in str(file) for file in installed.files or ())
-    endpoint = (
-        str(directory / "s") if os.name != "nt" else rf"\\.\pipe\bcn-reminder-{uuid7()}"
-    )
-    os.environ.update(
-        BCN_HOME=str(directory),
-        UV_TOOL_DIR=str(directory / "tools"),
-        UV_TOOL_BIN_DIR=str(directory / "bin"),
-        UV_CACHE_DIR=str(directory / "cache"),
-    )
-    native = "sidecar-windows" if os.name == "nt" else "sidecar-unix"
+    os.environ["BCN_HOME"] = str(directory)
     config = directory / "config.toml"
-    await asyncio.to_thread(
-        config.write_text,
-        tomli_w.dumps(
-            {
-                "version": "5",
-                "contribs": [
-                    {"enabled": [{"entry": entry, "config": value}]}
-                    for entry, value in (
-                        ("commands", {}),
-                        ("storage", {}),
-                        ("sqlite", {"name": "node.sqlite3"}),
-                        ("database", {"backend": "sqlite"}),
-                        ("schema", {}),
-                        ("legacy-node-migrations", {}),
-                        ("audit", {}),
-                        (native, {"endpoint": endpoint}),
-                        ("sidecar", {}),
-                        ("timer-wheel", {}),
-                        ("messages-node", {}),
-                        ("reminder", {}),
-                        ("reminder-gateway", {"directory": str(directory)}),
-                    )
-                ],
-            }
-        ),
+    payload = tomllib.loads(
+        await asyncio.to_thread(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text
+        )
     )
+    payload["contribs"].append(
+        {
+            "enabled": [
+                {"entry": "reminder-gateway", "config": {"directory": str(directory)}}
+            ]
+        }
+    )
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
 
     @asynccontextmanager
     async def control():

@@ -22,33 +22,9 @@ async def test_installed_reminders_use_durable_messages_and_shared_timer(
         root / "core",
         root / "app",
         *(
-            root / "contrib" / name
-            for name in (
-                "agent",
-                "audit",
-                "channel",
-                "timer",
-                "timer-wheel",
-                "harness",
-                "config",
-                "config-filesystem",
-                "config-versions",
-                "status",
-                "logging",
-                "manager",
-                "invoke",
-                "node-management",
-                "sidecar",
-                "sidecar-unix",
-                "sidecar-windows",
-                "storage",
-                "sqlite",
-                "schema",
-                "legacy-node-migrations",
-                "messages",
-                "messages-node",
-                "collaboration",
-                "reminder",
+            project.parent
+            for project in await asyncio.to_thread(
+                lambda: sorted((root / "contrib").glob("*/pyproject.toml"))
             )
         ),
         root / "contrib/agent/tests/fixtures/workbench",
@@ -69,10 +45,23 @@ async def test_installed_reminders_use_durable_messages_and_shared_timer(
         stdout, _ = await process.communicate()
         assert process.returncode == 0, stdout.decode()
     for suffix in ("*.whl", "*.tar.gz"):
-        command = ["uv", "run", "--isolated", "--no-project", "--python", "3.15"]
+        command = [
+            "uv",
+            "run",
+            "--isolated",
+            "--no-project",
+            "--python",
+            "3.15",
+        ]
         for artifact in await asyncio.to_thread(list, output.glob(suffix)):
             command.extend(["--with", str(artifact)])
-        command.append(str(Path(__file__).with_name("installed_smoke.py")))
+        command.extend(
+            [
+                str(root / "tests/run_installed.py"),
+                str(output),
+                str(Path(__file__).with_name("installed_smoke.py")),
+            ]
+        )
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=tmp_path,

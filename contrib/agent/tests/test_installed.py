@@ -18,28 +18,13 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
     }
     for path in (
         root / "core",
-        root / "contrib/audit",
-        root / "contrib/harness",
-        root / "contrib/channel",
-        root / "contrib/timer",
-        root / "contrib/invoke",
-        root / "contrib/config",
-        root / "contrib/config-filesystem",
-        root / "contrib/config-versions",
-        root / "contrib/storage",
-        root / "contrib/schema",
-        root / "contrib/sqlite",
-        root / "contrib/legacy-node-migrations",
-        root / "contrib/messages",
-        root / "contrib/messages-node",
-        root / "contrib/collaboration",
-        root / "contrib/reminder",
-        root / "contrib/timer-wheel",
-        root / "contrib/sidecar",
-        root / "contrib/sidecar-unix",
-        root / "contrib/sidecar-windows",
-        root / "contrib/agent",
-        root / "tests/support/src/bcn_sidecar_test/fixtures/example",
+        root / "app",
+        *(
+            project.parent
+            for project in await asyncio.to_thread(
+                lambda: sorted((root / "contrib").glob("*/pyproject.toml"))
+            )
+        ),
         Path(__file__).parent / "fixtures/journal",
         Path(__file__).parent / "fixtures/workbench",
         Path(__file__).parent / "fixtures/editor",
@@ -72,6 +57,8 @@ async def test_independent_agent_compositions_own_real_files(tmp_path: Path):
         for script in ("consumer_smoke.py", "channel_smoke.py"):
             process = await asyncio.create_subprocess_exec(
                 *command,
+                str(root / "tests/run_installed.py"),
+                str(output),
                 str(Path(__file__).with_name(script)),
                 cwd=tmp_path,
                 env=environment,

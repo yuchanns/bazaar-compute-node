@@ -87,6 +87,18 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             files("bazaar_compute_node").joinpath("defaults.toml").read_text
         )
     )
+    official = json.loads(
+        await asyncio.to_thread(
+            files("bazaar_contrib_manager").joinpath("catalog.json").read_text
+        )
+    )
+    packages = {entry["package"] for entry in official["contribs"]}
+    for package in payload["contribs"]:
+        package["source"] = (
+            source
+            if Requirement(package["package"]).name in packages
+            else "https://pypi.org/simple"
+        )
     manager = next(
         entry
         for package in payload["contribs"]
@@ -153,7 +165,6 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
                         {
                             "package": "bazaar-contrib-example",
                             "source": package_source,
-                            "version": ">=0.1.0",
                         }
                     ]
                 }
@@ -168,9 +179,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     assert location in candidate["contrib_indexes"]
     entries = await checked(lambda manager: manager.catalog.entries())
     assert any(
-        entry.package == "bazaar-contrib-example"
-        and entry.version
-        and len(entry.indexes) > 1
+        entry.package == "bazaar-contrib-example" and len(entry.indexes) > 1
         for entry in entries
     )
     assert any(

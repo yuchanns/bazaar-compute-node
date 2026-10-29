@@ -32,11 +32,6 @@ def sessions(database: Path, agent_id: str, *, forget: bool = False):
 
 async def exercise(path: Path):
     await asyncio.to_thread(path.mkdir)
-    endpoint = (
-        str(path / "sidecar.sock")
-        if os.name != "nt"
-        else r"\\.\pipe\bcn-recovery-" + str(uuid7())
-    )
     config = path / "node.json"
     agent = {
         "id": "Recovery",
@@ -47,31 +42,8 @@ async def exercise(path: Path):
         "harness": [{"kind": "document", "env": {"MISSING": "BCN_RECOVERY_MISSING"}}],
     }
     contribs = [
-        {"contrib": "audit"},
-        {"contrib": "storage"},
-        {"contrib": "sqlite", "config": {"name": "messages.sqlite3"}},
-        {"contrib": "database", "config": {"backend": "sqlite"}},
-        *(
-            {"contrib": name}
-            for name in (
-                "schema",
-                "legacy-node-migrations",
-                "timer-wheel",
-                "messages-node",
-                "collaboration",
-                "reminder",
-                "channel-builders",
-                "harness-builders",
-                "test-channel-builder",
-                "document-builder",
-                "agent-execution",
-            )
-        ),
-        {"contrib": "sidecar"},
-        {
-            "contrib": "sidecar-windows" if os.name == "nt" else "sidecar-unix",
-            "config": {"endpoint": endpoint},
-        },
+        {"contrib": "test-channel-builder"},
+        {"contrib": "document-builder"},
         {"contrib": "agent", "config": {"agents": [agent]}},
     ]
 
@@ -119,7 +91,7 @@ async def exercise(path: Path):
         assert json.loads(await process.stdout.readline())["persisted"]
     finally:
         await stop(process, peer)
-    database = Path(os.environ["BCN_HOME"]) / ".bcn" / "messages.sqlite3"
+    database = Path(os.environ["BCN_HOME"]) / ".bcn" / "bcn.sqlite3"
     before = await asyncio.to_thread(sessions, database, agent["id"], forget=True)
     agent["harness"] = [{"kind": "document"}]
     process, peer = await start()
