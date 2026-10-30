@@ -170,6 +170,8 @@ async def exercise_server(path: Path) -> None:
 
 
 async def exercise(path: Path) -> None:
+    async with node(configer_options=(str(path / "defaults.toml"),)):
+        pass
     await exercise_server(path)
     config = path / "config.toml"
     directory = path / "journals"

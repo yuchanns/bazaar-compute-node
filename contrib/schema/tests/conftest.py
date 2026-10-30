@@ -1,40 +1,42 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from bazaar_contrib_timer import TIMER, Timer
-from bazaar_contrib_timer_wheel import timer_wheel
-from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribHub
+from bazaar_compute_node.boot import build, node
+from bazaar_contrib_storage import DB, Database
+from bazaar_core import Context, Contrib, ContribEntry
 
 
 @pytest.fixture
-async def timer() -> AsyncIterator[Timer]:
-    services: list[Timer] = []
-
+def open_database():
     @asynccontextmanager
-    async def consumer(ctx: Context):
-        services.append(ctx.accept(TIMER))
-        yield
+    async def open():
+        services: list[Database] = []
 
-    async with (
-        ContribHub() as hub,
-        hub.enable(
-            Composition(
-                entries=(
-                    ContribEntry(name="wheel", definition=timer_wheel),
-                    ContribEntry(
-                        name="consumer",
-                        definition=Contrib(accepts=[TIMER], lifespan=consumer),
-                    ),
-                ),
-                roots=("consumer",),
+        @asynccontextmanager
+        async def consume(ctx: Context):
+            services.append(ctx.accept(DB))
+            yield
+
+        def select(document):
+            composition = build(document)
+            entry = ContribEntry(
+                name="database-consumer",
+                definition=Contrib(accepts=[DB], lifespan=consume),
             )
-        ),
-    ):
-        yield services[0]
+            return composition.model_copy(
+                update={
+                    "entries": (*composition.entries, entry),
+                    "roots": (entry.name,),
+                }
+            )
+
+        async with node(start=select):
+            yield services[0]
+
+    return open
 
 
 @pytest.fixture(autouse=True)

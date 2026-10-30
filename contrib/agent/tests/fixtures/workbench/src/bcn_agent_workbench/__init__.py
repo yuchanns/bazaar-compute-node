@@ -10,9 +10,11 @@ import json
 import os
 import sys
 import threading
+import tomllib
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing, asynccontextmanager
 from functools import partial
+from importlib.resources import files
 from pathlib import Path
 from time import time_ns
 from typing import Any, ClassVar, Literal, cast
@@ -45,9 +47,6 @@ from bazaar_contrib_channel import (
 )
 from bazaar_contrib_config import (
     ConfigDocument,
-    ConfigurationEnvironment,
-    EnabledContrib,
-    configuration,
 )
 from bazaar_contrib_harness import (
     HARNESS,
@@ -81,55 +80,44 @@ from bazaar_contrib_harness import (
     TurnStarted,
     harness_builder_key,
 )
-from bazaar_core import Composition, Context, Contrib, ContribEntry, ContribSpec, load
+from bazaar_core import Composition, Context, Contrib
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
-def build(document: ConfigDocument) -> Composition:
-    return load(
-        [
-            ContribSpec(contrib=entry.entry, config=entry.config)
-            for package in document.contribs
-            if package.applies
-            for entry in package.enabled
-        ]
-    )
-
-
 async def configured(path: Path, composition: Composition) -> Composition:
-    """Use a real configuration carrier for independent Agent tool processes."""
-    document = {
-        "version": "5",
-        "contribs": [
-            {"enabled": [{"entry": entry.name, "config": dict(entry.config)}]}
-            for entry in composition.entries
-        ],
+    """Configure the packaged defaults and add this consumer's public entries."""
+    from bazaar_compute_node.boot import build
+
+    document = tomllib.loads(
+        await asyncio.to_thread(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text
+        )
+    )
+    entries = {entry.name: entry for entry in composition.entries}
+    for package in document["contribs"]:
+        for entry in package["enabled"]:
+            if entry["entry"] in entries:
+                entry["config"] = dict(entries[entry["entry"]].config)
+    names = {
+        entry["entry"]
+        for package in document["contribs"]
+        for entry in package["enabled"]
     }
+    document["contribs"].extend(
+        {"enabled": [{"entry": entry.name, "config": dict(entry.config)}]}
+        for entry in composition.entries
+        if entry.name not in names and entry.source is not None
+    )
     await asyncio.to_thread(path.write_text, tomli_w.dumps(document), encoding="utf-8")
-    bootstrap = await asyncio.to_thread(
-        load,
-        [
-            ContribSpec(contrib="config-filesystem", config={"options": [str(path)]}),
-            *(ContribSpec(contrib=f"config-v{number}") for number in range(1, 6)),
-        ],
-    )
-    entry = ContribEntry(
-        name="workbench-configuration",
-        definition=configuration(
-            document,
-            build,
-            environment=ConfigurationEnvironment(
-                hub="bazaar_core:ContribHub",
-                entries=tuple(
-                    EnabledContrib(entry=entry.name, config=entry.config)
-                    for entry in bootstrap.entries
-                ),
+    defaults = await asyncio.to_thread(build, ConfigDocument.model_validate(document))
+    return defaults.model_copy(
+        update={
+            "entries": (
+                *(entry for entry in defaults.entries if entry.name not in entries),
+                *composition.entries,
             ),
-            start=lambda _: Composition(),
-        ),
-    )
-    return composition.model_copy(
-        update={"entries": (*bootstrap.entries, entry, *composition.entries)}
+            "roots": composition.roots,
+        }
     )
 
 

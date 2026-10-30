@@ -10,9 +10,10 @@ from contextlib import asynccontextmanager
 from importlib.resources import files
 from pathlib import Path
 
+import tomli_w
 from bazaar_compute_node.boot import node
 from bazaar_contrib_config import ConfigDocument, Configuration
-from bazaar_contrib_config_filesystem import FileConfigStore
+from packaging.requirements import Requirement
 
 from bazaar_contrib_manager import Operation
 
@@ -64,6 +65,18 @@ async def exercise(path: Path, source: str):
         ),
     )
     payload["contrib_indexes"] = [str(catalog)]
+    official = json.loads(
+        await asyncio.to_thread(
+            files("bazaar_contrib_manager").joinpath("catalog.json").read_text
+        )
+    )
+    packages = {entry["package"] for entry in official["contribs"]}
+    for package in payload["contribs"]:
+        package["source"] = (
+            source
+            if Requirement(package["package"]).name in packages
+            else "https://pypi.org/simple"
+        )
     manager = next(
         entry
         for package in payload["contribs"]
@@ -75,8 +88,7 @@ async def exercise(path: Path, source: str):
         for entry in package["enabled"]:
             if entry["entry"] == "logging":
                 entry["config"] = {"level": "WARNING"}
-    async with FileConfigStore(config) as store:
-        await store.write(payload, expected_revision=None)
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
 
     async def cli(*arguments: str, success: bool = True):
         print("bcn --config", config, "contrib", *arguments, flush=True)
@@ -101,17 +113,15 @@ async def exercise(path: Path, source: str):
         return text
 
     async def position(name: str) -> int:
-        async with FileConfigStore(config) as store:
-            snapshot = await store.read()
-            assert snapshot is not None
-            document = ConfigDocument.model_validate(snapshot.payload)
-            return next(
-                index
-                for index, entry in enumerate(
-                    entry for package in document.contribs for entry in package.enabled
-                )
-                if entry.entry == name
+        snapshot = tomllib.loads(await asyncio.to_thread(config.read_text))
+        document = ConfigDocument.model_validate(snapshot)
+        return next(
+            index
+            for index, entry in enumerate(
+                entry for package in document.contribs for entry in package.enabled
             )
+            if entry.entry == name
+        )
 
     async with running(config) as process:
         text = await cli(
@@ -196,17 +206,13 @@ async def exercise(path: Path, source: str):
         assert "started:offline" in await asyncio.to_thread(offline.read_text)
 
     # A real slow lifespan exceeds the client's existing timeout after saving remotely.
-    async with FileConfigStore(config) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
-            mode="json"
-        )
-        for package in payload["contribs"]:
-            for entry in package["enabled"]:
-                if entry["entry"] in {"sidecar-unix", "sidecar-windows"}:
-                    entry["config"] = {"timeout": 1}
-        await store.write(payload, expected_revision=snapshot.revision)
+    snapshot = tomllib.loads(await asyncio.to_thread(config.read_text))
+    payload = ConfigDocument.model_validate(snapshot).model_dump(mode="json")
+    for package in payload["contribs"]:
+        for entry in package["enabled"]:
+            if entry["entry"] in {"sidecar-unix", "sidecar-windows"}:
+                entry["config"] = {"timeout": 1}
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     async with running(config):
         text = await cli(
             "edit",
@@ -235,20 +241,14 @@ async def exercise(path: Path, source: str):
         assert "started:delayed" in await asyncio.to_thread(offline.read_text)
 
     # A composition without a client provider uses local management directly.
-    async with FileConfigStore(config) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
-            mode="json"
-        )
-        payload["contribs"] = [
-            package
-            for package in payload["contribs"]
-            if not any(
-                entry["entry"].startswith("sidecar") for entry in package["enabled"]
-            )
-        ]
-        await store.write(payload, expected_revision=snapshot.revision)
+    snapshot = tomllib.loads(await asyncio.to_thread(config.read_text))
+    payload = ConfigDocument.model_validate(snapshot).model_dump(mode="json")
+    payload["contribs"] = [
+        package
+        for package in payload["contribs"]
+        if not any(entry["entry"].startswith("sidecar") for entry in package["enabled"])
+    ]
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     await cli(
         "edit",
         str(await position("example-file")),

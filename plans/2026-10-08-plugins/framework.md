@@ -423,8 +423,15 @@ revision 是载体返回的不透明修订标识，与文档的结构 version �
 宿主记录载体入口、旧／新修订和变更摘要。
 
 默认发行包为 `bazaar-contrib-config-filesystem`，模块为 `bazaar_contrib_config_filesystem`，
-入口为 `config-filesystem`，声明 offers=[CONFIG_STORE]，由 app 的发行依赖安装。
-它使用自身的 FileConfig 模型将 options 校验为路径序列，使用最后一个路径；未指定时使用 `(BCN_HOME 或用户主目录)/.bcn/config.toml`。
+入口为 `config-filesystem`，声明 offers=[CONFIG_STORE]，在 app 的默认配置中声明安装要求。
+所选载体为 filesystem 且入口尚未安装时，app 先使用 config 包提供的 `config-memory` 创建临时 Hub，
+直接构造包含 filesystem 安装要求及 commands、contrib-manager 条目的临时文档，
+装配版本服务、命令与 manager，并通过 manager 的 bootstrap 操作安装 filesystem。
+该操作复用环境锁与 uv 命令执行，临时文档中的安装要求只包含 filesystem。
+临时 Hub 完整退出后，app 重新发现入口，由 filesystem 读取真实配置并准备业务依赖。
+已有 filesystem 及其他 configer 沿用原有单 Hub 启动流程；默认选择和显式选择 filesystem 使用同一判断。
+`MemoryConfigStore` 只持有当前生命周期内的配置快照，读写复制文档数据，以独立 revision 实现条件提交。
+filesystem 使用自身的 FileConfig 模型将 options 校验为路径序列，使用最后一个路径；未指定时使用 `(BCN_HOME 或用户主目录)/.bcn/config.toml`。
 读取 TOML 并以原始字节摘要作为 revision；
 经该接口提交的写入在同一配置锁内复核当前摘要，
 以同目录临时文件、fsync 和原子替换提交 TOML。
@@ -480,7 +487,7 @@ app 将按传入顺序收集的原始字符串序列绑定到载体模型的 opt
 
 启动选择固定使用以下输入规则，配置命令与升级入口复用相同选择：
 
-- `--configer <entry>` 选择已安装入口；缺省为 config-filesystem。
+- `--configer <entry>` 选择载体入口；缺省为 config-filesystem，缺失时按上述临时 memory 流程安装。
 - `--configer-options <option>` 可重复使用，按出现顺序提供所选入口的原始 options；缺省为空序列。
   格式解析和 Pydantic 校验由该载体的模型在装配边界执行。
 - `--config <option>` 是 --configer-options 的别名，可重复使用并与其混用；帮助说明为 `Legacy alias for --configer-options.`。
@@ -977,7 +984,8 @@ uv 由宿主进程的 PATH 解析为具体执行文件；目标环境明确对�
 `package` 使用与 `pyproject.toml` 的 `project.dependencies` 相同的完整 PEP 508 字符串，保留 extras、版本范围、URL 和 marker；
 `enabled = []` 表示只安装包。同一发行包的多个入口归入同一个数组，包规格和来源只声明一次；编辑参数保留依赖规格，停用最后一个入口保留只安装声明。
 TOML 可使用内联数组，也可用 `[[contribs.enabled]]` 展开启用项，再以 `[contribs.enabled.config]` 填写各入口的参数。
-`add` 未传 `--version` 时沿用所选索引条目的版本范围，显式参数覆盖索引范围；保存实际安装版本或所选版本范围及来源。
+索引条目只声明包名和来源，契约、缓存与列表均使用这两个字段；索引不声明或兼容版本要求。
+`add` 的 `--version` 由用户选择安装要求；未指定时由 uv 解析。保存实际安装版本或用户所选版本范围及来源。
 `--enable` 将声明带到该包提供的入口。迁移只需复制配置。
 启用入口时仅选择当前平台适用的同名发行包声明，适用声明多于一条时明确报告歧义。configured 将省略 enabled 的合法声明按仅安装包展示。每次保存配置重新记录该快照尚未应用，后续阶段失败时保留已完成的安装和应用结果；只有已保存但尚未应用的配置或已识别的环境变动需要重启。
 configured 同样将省略 contribs 的合法空配置按模型默认空列表展示。

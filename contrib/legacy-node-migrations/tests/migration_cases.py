@@ -8,9 +8,7 @@ lazy from pathlib import Path
 
 import pytest
 from bazaar_contrib_schema import SCHEMA, Schema
-from bazaar_contrib_sqlite import SqliteConfig, open_database
 from bazaar_contrib_storage import Select
-from bazaar_contrib_timer import Timer
 
 from bazaar_contrib_legacy_node_migrations import LEGACY_NODE_MIGRATIONS
 
@@ -88,7 +86,7 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
     monkeypatch: pytest.MonkeyPatch,
     version: int,
     modules,
-    timer: Timer,
+    open_database,
 ):
     root = (await asyncio.to_thread(Path(__file__).resolve)).parents[3]
     path = database_path
@@ -108,13 +106,9 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
     _, stderr = await process.communicate()
     assert process.returncode == 0, stderr.decode()
     async with AsyncExitStack() as stack:
-        database = await stack.enter_async_context(
-            open_database(SqliteConfig(), timer=timer)
-        )
+        database = await stack.enter_async_context(open_database())
         monkeypatch.setenv("BCN_HOME", str(tmp_path / "expected"))
-        reference = await stack.enter_async_context(
-            open_database(SqliteConfig(), timer=timer)
-        )
+        reference = await stack.enter_async_context(open_database())
         original = await database.select(Select(table="schema_migrations"))
         schema = Schema(database)
         await schema.start()
@@ -142,11 +136,11 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
 
 
 async def test_new_database_uses_current_baseline_and_retains_new_data(
-    modules, timer: Timer
+    modules, open_database
 ):
     from bazaar_contrib_storage import Insert
 
-    async with open_database(SqliteConfig(), timer=timer) as database:
+    async with open_database() as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, modules):
@@ -174,11 +168,11 @@ async def test_new_database_uses_current_baseline_and_retains_new_data(
 
 
 async def test_current_messages_keep_search_in_sync_with_the_sequence_key(
-    modules, timer: Timer
+    modules, open_database
 ):
     import bazaar_contrib_storage as s
 
-    async with open_database(SqliteConfig(), timer=timer) as database:
+    async with open_database() as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, modules):
@@ -229,7 +223,7 @@ async def test_current_messages_keep_search_in_sync_with_the_sequence_key(
 
 
 async def test_registered_03_database_accepts_owned_reminder_versions_and_restart(
-    database_path: Path, modules, timer: Timer
+    database_path: Path, modules, open_database
 ):
     import bazaar_contrib_storage as s
     from bazaar_contrib_schema import Migration, ModuleSchema
@@ -264,7 +258,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
         else module
         for name, module in modules.items()
     }
-    async with open_database(SqliteConfig(), timer=timer) as database:
+    async with open_database() as database:
         previous = await database.select(Select(table="contrib_schema_migrations"))
         original = await database.select(Select(table="schema_migrations"))
         messages = await database.select(Select(table="messages"))
@@ -281,7 +275,7 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
         for row in previous:
             assert row in history
     for _ in range(2):
-        async with open_database(SqliteConfig(), timer=timer) as database:
+        async with open_database() as database:
             schema = Schema(database)
             await schema.start()
             async with registered(schema, dict(reversed(upgraded.items()))):
@@ -309,7 +303,7 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
     database_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     modules,
-    timer: Timer,
+    open_database,
 ):
     from bazaar_contrib_storage import Insert
 
@@ -325,13 +319,9 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
     await asyncio.to_thread(expected.parent.mkdir, parents=True)
     await asyncio.to_thread(expected.write_bytes, zlib.decompress(data))
     async with AsyncExitStack() as stack:
-        database = await stack.enter_async_context(
-            open_database(SqliteConfig(), timer=timer)
-        )
+        database = await stack.enter_async_context(open_database())
         monkeypatch.setenv("BCN_HOME", str(tmp_path / "expected"))
-        reference = await stack.enter_async_context(
-            open_database(SqliteConfig(), timer=timer)
-        )
+        reference = await stack.enter_async_context(open_database())
         previous = await database.select(Select(table="contrib_schema_migrations"))
         original = await database.select(Select(table="schema_migrations"))
         for run in range(2):
@@ -381,24 +371,18 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
 
 
 async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
-    database_path: Path, modules, timer: Timer
+    database_path: Path, modules, open_database
 ):
     import time
 
+    from bazaar_compute_node.boot import build, node
     from bazaar_contrib_agent import AGENTS
     from bazaar_contrib_collaboration import COLLABORATION
     from bazaar_contrib_messages import MESSAGES
     from bazaar_contrib_reminder import REMINDER
     from bazaar_contrib_schema import SCHEMA
     from bazaar_contrib_storage import DB, Update, Value
-    from bazaar_core import (
-        Context,
-        Contrib,
-        ContribEntry,
-        ContribHub,
-        ContribSpec,
-        load,
-    )
+    from bazaar_core import Context, Contrib, ContribEntry
 
     fixture = Path(__file__).parent / "fixtures/node-v03.sqlite3.zlib"
     data = await asyncio.to_thread(fixture.read_bytes)
@@ -406,7 +390,7 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
     await asyncio.to_thread(path.parent.mkdir, parents=True)
     await asyncio.to_thread(path.write_bytes, zlib.decompress(data))
     # Live scheduling requires a consistent fired occurrence and a future due time.
-    async with open_database(SqliteConfig(), timer=timer) as database:
+    async with open_database() as database:
         await database.update(
             Update(
                 table="reminders",
@@ -430,48 +414,21 @@ async def test_business_lifespans_resume_registered_nodes_and_preserve_rows(
 
     for _ in range(2):
         active.clear()
-        composition = await asyncio.to_thread(
-            load,
-            [
-                ContribSpec(contrib=entry, config=config)
-                for entry, config in (
-                    ("storage", {}),
-                    ("sqlite", {}),
-                    ("database", {"backend": "sqlite"}),
-                    ("schema", {}),
-                    ("legacy-node-migrations", {}),
-                    ("audit", {}),
-                    ("timer-wheel", {}),
-                    ("agent", {}),
-                    ("agent-execution", {}),
-                    ("messages-node", {}),
-                    ("collaboration", {}),
-                    ("reminder", {}),
-                )
-            ],
-        )
-        composition = composition.model_copy(
-            update={
-                "entries": (
-                    *composition.entries,
-                    ContribEntry(
-                        name="consumer",
-                        definition=Contrib(
-                            accepts=[
-                                AGENTS,
-                                SCHEMA,
-                                DB,
-                                MESSAGES,
-                                COLLABORATION,
-                                REMINDER,
-                            ],
-                            lifespan=consume,
-                        ),
-                    ),
-                )
-            }
-        )
-        async with ContribHub() as hub, hub.enable(composition):
+
+        def select(document):
+            composition = build(document)
+            entry = ContribEntry(
+                name="consumer",
+                definition=Contrib(
+                    accepts=[AGENTS, SCHEMA, DB, MESSAGES, COLLABORATION, REMINDER],
+                    lifespan=consume,
+                ),
+            )
+            return composition.model_copy(
+                update={"entries": (*composition.entries, entry)}
+            )
+
+        async with node(start=select):
             schema, database = active[0]
             assert {f"bazaar-contrib-{name}" for name in modules}.issubset(
                 schema.modules

@@ -16,10 +16,10 @@ lazy from hashlib import sha256
 lazy from typing import Any
 lazy from uuid import uuid4
 
+import tomli_w
 from bazaar_compute_node import run
 from bazaar_compute_node.boot import bootstrap, build, node
 from bazaar_contrib_config import ConfigDocument, ContribPackage, EnabledContrib
-from bazaar_contrib_config_filesystem import FileConfigStore
 from bazaar_contrib_invoke import COMMANDS
 from bazaar_core import (
     Blocked,
@@ -87,6 +87,18 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             files("bazaar_compute_node").joinpath("defaults.toml").read_text
         )
     )
+    official = json.loads(
+        await asyncio.to_thread(
+            files("bazaar_contrib_manager").joinpath("catalog.json").read_text
+        )
+    )
+    packages = {entry["package"] for entry in official["contribs"]}
+    for package in payload["contribs"]:
+        package["source"] = (
+            source
+            if Requirement(package["package"]).name in packages
+            else "https://pypi.org/simple"
+        )
     manager = next(
         entry
         for package in payload["contribs"]
@@ -94,8 +106,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         if entry["entry"] == "contrib-manager"
     )
     manager["config"] = {"host_source": source}
-    async with FileConfigStore(config) as store:
-        await store.write(payload, expected_revision=None)
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     results: list[Operation] = []
 
     async def checked(action) -> Any:
@@ -153,7 +164,6 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
                         {
                             "package": "bazaar-contrib-example",
                             "source": package_source,
-                            "version": ">=0.1.0",
                         }
                     ]
                 }
@@ -168,9 +178,7 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     assert location in candidate["contrib_indexes"]
     entries = await checked(lambda manager: manager.catalog.entries())
     assert any(
-        entry.package == "bazaar-contrib-example"
-        and entry.version
-        and len(entry.indexes) > 1
+        entry.package == "bazaar-contrib-example" and len(entry.indexes) > 1
         for entry in entries
     )
     assert any(
@@ -229,16 +237,12 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         await asyncio.to_thread(index.read_text)
         + f'\n<a href="../../files/{wheel.name}#sha256={digest}">{wheel.name}</a>',
     )
-    async with FileConfigStore(config) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
-            mode="json"
-        )
-        for package in payload["contribs"]:
-            if ContribPackage.model_validate(package).distribution == detail.package:
-                package["package"] = f"{detail.package}>={version}"
-        await store.write(payload, expected_revision=snapshot.revision)
+    snapshot = tomllib.loads(await asyncio.to_thread(config.read_text))
+    payload = ConfigDocument.model_validate(snapshot).model_dump(mode="json")
+    for package in payload["contribs"]:
+        if ContribPackage.model_validate(package).distribution == detail.package:
+            package["package"] = f"{detail.package}>={version}"
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     await cli("sync")
     current = await checked(lambda manager: manager.detail("example"))
     await asyncio.to_thread(
@@ -281,13 +285,14 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
             enabled=(EnabledContrib(entry="unavailable"),),
         )
     )
-    async with FileConfigStore(recovery) as store:
-        await store.write(
+    await asyncio.to_thread(
+        recovery.write_text,
+        tomli_w.dumps(
             document.model_copy(update={"contribs": tuple(packages)}).model_dump(
                 mode="json"
-            ),
-            expected_revision=None,
-        )
+            )
+        ),
+    )
     output, _ = await cli("configured", config=recovery)
     assert "unavailable" in output and "example-file" in output
 
@@ -311,11 +316,11 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     assert "released:recovery" in await asyncio.to_thread(journal.read_text)
     position = sum(len(package.enabled) for package in packages[:-1])
     await cli("disable", str(position), config=recovery)
-    async with FileConfigStore(recovery) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        document = ConfigDocument.model_validate(snapshot.payload)
-        await store.write(
+    snapshot = tomllib.loads(await asyncio.to_thread(recovery.read_text))
+    document = ConfigDocument.model_validate(snapshot)
+    await asyncio.to_thread(
+        recovery.write_text,
+        tomli_w.dumps(
             document.model_copy(
                 update={
                     "contribs": tuple(
@@ -324,9 +329,9 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
                         if package.distribution != "bazaar-contrib-unavailable"
                     )
                 }
-            ).model_dump(mode="json"),
-            expected_revision=snapshot.revision,
-        )
+            ).model_dump(mode="json")
+        ),
+    )
     await cli("enable", "example", "--entry", "example-consumer", config=recovery)
     await cli("sync", config=recovery)
     records = await invoke({"configer_options": (str(recovery),)}, activate)
@@ -338,47 +343,41 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
 
     # A legacy document whose candidate cannot be saved remains readable.
     legacy = path / "legacy-recovery.toml"
-    async with FileConfigStore(legacy) as store:
-        await store.write(
-            {"version": "4", "agent": [{"id": "legacy", "name": "Legacy"}]},
-            expected_revision=None,
-        )
+    await asyncio.to_thread(
+        legacy.write_text,
+        tomli_w.dumps({"version": "4", "agent": [{"id": "legacy", "name": "Legacy"}]}),
+    )
     converted, _ = await invoke(
         {"configer_options": (str(legacy),)},
         lambda manager: manager.configuration.read(),
     )
     assert converted.changes
     # Handwritten platform declarations can leave the installed-only enabled field out.
-    async with FileConfigStore(config) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
-            mode="json"
-        )
-        declarations = []
-        for package in payload["contribs"]:
-            if ContribPackage.model_validate(package).distribution == detail.package:
-                package = dict(package)
-                package.pop("enabled", None)
-                declarations.extend(
-                    (
-                        {
-                            **package,
-                            "package": f"{detail.package}=={detail.version}; sys_platform != '{sys.platform}'",
-                            "enabled": [],
-                        },
-                        {
-                            **package,
-                            "package": f"{detail.package}=={detail.version}; sys_platform == '{sys.platform}'",
-                        },
-                    )
+    snapshot = tomllib.loads(await asyncio.to_thread(config.read_text))
+    payload = ConfigDocument.model_validate(snapshot).model_dump(mode="json")
+    declarations = []
+    for package in payload["contribs"]:
+        if ContribPackage.model_validate(package).distribution == detail.package:
+            package = dict(package)
+            package.pop("enabled", None)
+            declarations.extend(
+                (
+                    {
+                        **package,
+                        "package": f"{detail.package}=={detail.version}; sys_platform != '{sys.platform}'",
+                        "enabled": [],
+                    },
+                    {
+                        **package,
+                        "package": f"{detail.package}=={detail.version}; sys_platform == '{sys.platform}'",
+                    },
                 )
-            else:
-                declarations.append(package)
-        await store.write(
-            {**payload, "contribs": declarations},
-            expected_revision=snapshot.revision,
-        )
+            )
+        else:
+            declarations.append(package)
+    await asyncio.to_thread(
+        config.write_text, tomli_w.dumps({**payload, "contribs": declarations})
+    )
     for arguments, value in (
         (("list",), detail.package),
         (("show", "example"), detail.version),
@@ -670,21 +669,17 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
         for entry in package["enabled"]
     )
     # Edit the standard dependency syntax just as an operator edits the portable document.
-    async with FileConfigStore(config) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
-            mode="json"
-        )
-        for entry in payload["contribs"]:
-            if (
-                ContribPackage.model_validate(entry).distribution == detail.package
-                and ContribPackage.model_validate(entry).applies
-            ):
-                entry["package"] = (
-                    "bazaar-contrib-example[text]>=0.2,<0.3; python_version >= '3.15'"
-                )
-        await store.write(payload, expected_revision=snapshot.revision)
+    snapshot = tomllib.loads(await asyncio.to_thread(config.read_text))
+    payload = ConfigDocument.model_validate(snapshot).model_dump(mode="json")
+    for entry in payload["contribs"]:
+        if (
+            ContribPackage.model_validate(entry).distribution == detail.package
+            and ContribPackage.model_validate(entry).applies
+        ):
+            entry["package"] = (
+                "bazaar-contrib-example[text]>=0.2,<0.3; python_version >= '3.15'"
+            )
+    await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
     # A second node receives only the configuration, after installing the minimal host.
     migrated = path.parent / f"m-{uuid4().hex[:8]}"
     await asyncio.to_thread(migrated.mkdir)
@@ -791,22 +786,18 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     )
     assert "released:edited" in await asyncio.to_thread(writer.read_text)
 
-    async with FileConfigStore(copied) as store:
-        snapshot = await store.read()
-        assert snapshot is not None
-        payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
-            mode="json"
-        )
-        url = other_source.replace(
-            "/simple/", "/files/bazaar_contrib_example-0.2.0-py3-none-any.whl"
-        )
-        for entry in payload["contribs"]:
-            if (
-                ContribPackage.model_validate(entry).distribution == detail.package
-                and ContribPackage.model_validate(entry).applies
-            ):
-                entry["package"] = f"bazaar-contrib-example[text] @ {url}"
-        await store.write(payload, expected_revision=snapshot.revision)
+    snapshot = tomllib.loads(await asyncio.to_thread(copied.read_text))
+    payload = ConfigDocument.model_validate(snapshot).model_dump(mode="json")
+    url = other_source.replace(
+        "/simple/", "/files/bazaar_contrib_example-0.2.0-py3-none-any.whl"
+    )
+    for entry in payload["contribs"]:
+        if (
+            ContribPackage.model_validate(entry).distribution == detail.package
+            and ContribPackage.model_validate(entry).applies
+        ):
+            entry["package"] = f"bazaar-contrib-example[text] @ {url}"
+    await asyncio.to_thread(copied.write_text, tomli_w.dumps(payload))
     await launch(
         str(python),
         "-m",
@@ -841,21 +832,15 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     directory = local / "example"
     await asyncio.to_thread(shutil.copytree, releases / "example-two", directory)
     for artifact in (wheel, directory):
-        async with FileConfigStore(copied) as store:
-            snapshot = await store.read()
-            assert snapshot is not None
-            payload = ConfigDocument.model_validate(snapshot.payload).model_dump(
-                mode="json"
-            )
-            for entry in payload["contribs"]:
-                if (
-                    ContribPackage.model_validate(entry).distribution == detail.package
-                    and ContribPackage.model_validate(entry).applies
-                ):
-                    entry["package"] = (
-                        f"bazaar-contrib-example[text] @ {artifact.as_uri()}"
-                    )
-            await store.write(payload, expected_revision=snapshot.revision)
+        snapshot = tomllib.loads(await asyncio.to_thread(copied.read_text))
+        payload = ConfigDocument.model_validate(snapshot).model_dump(mode="json")
+        for entry in payload["contribs"]:
+            if (
+                ContribPackage.model_validate(entry).distribution == detail.package
+                and ContribPackage.model_validate(entry).applies
+            ):
+                entry["package"] = f"bazaar-contrib-example[text] @ {artifact.as_uri()}"
+        await asyncio.to_thread(copied.write_text, tomli_w.dumps(payload))
         await launch(
             str(python),
             "-m",
@@ -905,26 +890,21 @@ async def exercise(path: Path, source: str, other_source: str, releases: Path) -
     )
     carrier = {"configer": "example-config", **options}
     for platform in (None, "win32" if sys.platform != "win32" else "linux"):
-        async with FileConfigStore(config) as store:
-            snapshot = await store.read()
-            assert snapshot is not None
-            original = snapshot.payload
-            payload = ConfigDocument.model_validate(original).model_dump(mode="json")
-            packages = []
-            for package in payload["contribs"]:
-                if package["package"].startswith("bazaar-contrib-example-carrier"):
-                    if platform is None:
-                        continue
-                    package["package"] += f'; sys_platform == "{platform}"'
-                packages.append(package)
-            payload["contribs"] = packages
-            await store.write(payload, expected_revision=snapshot.revision)
+        snapshot = tomllib.loads(await asyncio.to_thread(config.read_text))
+        original = snapshot
+        payload = ConfigDocument.model_validate(original).model_dump(mode="json")
+        packages = []
+        for package in payload["contribs"]:
+            if package["package"].startswith("bazaar-contrib-example-carrier"):
+                if platform is None:
+                    continue
+                package["package"] += f'; sys_platform == "{platform}"'
+            packages.append(package)
+        payload["contribs"] = packages
+        await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
         synced = await invoke(carrier, lambda manager: manager.sync())
         assert synced.installed, synced.model_dump_json(indent=2)
-        async with FileConfigStore(config) as store:
-            snapshot = await store.read()
-            assert snapshot is not None
-            await store.write(original, expected_revision=snapshot.revision)
+        await asyncio.to_thread(config.write_text, tomli_w.dumps(original))
     protected = await invoke(
         carrier, lambda manager: manager.remove("bazaar-contrib-example-carrier")
     )

@@ -12,7 +12,7 @@ The corresponding entry in `config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-channel~=0.3.0rc1"
+package = "bazaar-contrib-channel==0.3.*"
 [[contribs.enabled]]
 entry = "channel-builders"
 ```

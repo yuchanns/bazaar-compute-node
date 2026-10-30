@@ -13,7 +13,7 @@ The corresponding entry in `config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-harness~=0.3.0rc1"
+package = "bazaar-contrib-harness==0.3.*"
 [[contribs.enabled]]
 entry = "harness-builders"
 ```

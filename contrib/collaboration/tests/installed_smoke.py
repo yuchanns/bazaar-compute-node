@@ -7,16 +7,21 @@ import json
 import os
 import sqlite3
 import sys
+import tomllib
 from contextlib import asynccontextmanager, closing
 from importlib.metadata import distribution
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, cast
 from uuid import uuid7
 
 import tomli_w
+from bazaar_compute_node.boot import build
+from bazaar_compute_node.boot import node as application
+from bazaar_contrib_config import ConfigDocument
 from bazaar_contrib_sidecar import CLIENT, Client
-from bazaar_core import Context, Contrib, ContribEntry, ContribHub, ContribSpec, load
+from bazaar_core import Composition, Context, Contrib, ContribEntry
 
 
 class Peer:
@@ -121,7 +126,7 @@ async def node(config: Path):
 def rows(directory: Path, table: str) -> list[dict[str, Any]]:
     with closing(
         sqlite3.connect(
-            (directory / ".bcn" / "node.sqlite3").as_uri() + "?mode=ro", uri=True
+            (directory / ".bcn" / "bcn.sqlite3").as_uri() + "?mode=ro", uri=True
         )
     ) as database:
         database.row_factory = sqlite3.Row
@@ -207,41 +212,23 @@ async def exercise(directory: Path):
     directory = await asyncio.to_thread(directory.resolve)
     installed = distribution("bazaar-contrib-collaboration")
     assert any(".dist-info/licenses/" in str(file) for file in installed.files or ())
-    endpoint = (
-        str(directory / "s")
-        if os.name != "nt"
-        else rf"\\.\pipe\bcn-collaboration-{uuid7()}"
-    )
-    os.environ.update(
-        BCN_HOME=str(directory),
-        BCN_ENDPOINT=endpoint,
-        UV_TOOL_DIR=str(directory / "tools"),
-        UV_TOOL_BIN_DIR=str(directory / "bin"),
-        UV_CACHE_DIR=str(directory / "cache"),
-    )
-    native = "sidecar-windows" if os.name == "nt" else "sidecar-unix"
+    os.environ["BCN_HOME"] = str(directory)
     config = directory / "config.toml"
-    payload = {
-        "version": "5",
-        "contribs": [
-            {"enabled": [{"entry": entry, "config": value}]}
-            for entry, value in (
-                ("commands", {}),
-                ("storage", {}),
-                ("sqlite", {"name": "node.sqlite3"}),
-                ("database", {"backend": "sqlite"}),
-                ("schema", {}),
-                ("legacy-node-migrations", {}),
-                ("audit", {}),
-                (native, {"endpoint": endpoint}),
-                ("sidecar", {}),
-                ("timer-wheel", {}),
-                ("messages-node", {}),
-                ("collaboration", {}),
-                ("collaboration-gateway", {"directory": str(directory)}),
-            )
-        ],
-    }
+    payload = tomllib.loads(
+        await asyncio.to_thread(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text
+        )
+    )
+    payload["contribs"].append(
+        {
+            "enabled": [
+                {
+                    "entry": "collaboration-gateway",
+                    "config": {"directory": str(directory)},
+                }
+            ]
+        }
+    )
     await asyncio.to_thread(config.write_text, tomli_w.dumps(payload))
 
     @asynccontextmanager
@@ -253,25 +240,20 @@ async def exercise(directory: Path):
             clients.append(ctx.accept(CLIENT))
             yield
 
-        composition = await asyncio.to_thread(
-            load,
-            (
-                ContribSpec(contrib="timer-wheel"),
-                ContribSpec(contrib=native, config={"endpoint": endpoint}),
-            ),
-        )
-        composition = composition.model_copy(
-            update={
-                "entries": (
-                    *composition.entries,
-                    ContribEntry(
-                        name="control",
-                        definition=Contrib(accepts=[CLIENT], lifespan=consumer),
-                    ),
-                )
-            }
-        )
-        async with ContribHub() as hub, hub.enable(composition):
+        def select(document: ConfigDocument) -> Composition:
+            composition = build(document)
+            entry = ContribEntry(
+                name="control",
+                definition=Contrib(accepts=[CLIENT], lifespan=consumer),
+            )
+            return composition.model_copy(
+                update={
+                    "entries": (*composition.entries, entry),
+                    "roots": (entry.name,),
+                }
+            )
+
+        async with application(configer_options=(str(config),), start=select):
             peers: dict[str, Peer] = {}
             try:
                 for owner in ("Cloud", "Tifa"):

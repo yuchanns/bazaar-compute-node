@@ -6,11 +6,12 @@ lazy import asyncio
 lazy import os
 lazy import signal
 lazy import sys
+lazy import tomllib
+lazy from importlib.resources import files
 lazy from pathlib import Path
 
 import pytest
-from bazaar_contrib_config import ConfigDocument, ContribPackage, EnabledContrib
-from bazaar_contrib_config_filesystem import FileConfigStore
+import tomli_w
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process signals")
@@ -20,19 +21,16 @@ async def test_run_uses_selected_configuration_and_exits(tmp_path: Path, sig: in
     configured = tmp_path / (
         "selected.toml" if sig == signal.SIGTERM else "options with spaces.toml"
     )
-    payload = ConfigDocument(
-        contribs=(
-            ContribPackage(
-                enabled=(
-                    EnabledContrib(entry="commands"),
-                    EnabledContrib(entry="node-management"),
-                    EnabledContrib(entry="logging", config={"path": str(log)}),
-                )
-            ),
-        ),
-    ).model_dump(mode="json")
-    async with FileConfigStore(configured) as store:
-        await store.write(payload, expected_revision=None)
+    payload = tomllib.loads(
+        await asyncio.to_thread(
+            files("bazaar_compute_node").joinpath("defaults.toml").read_text
+        )
+    )
+    for package in payload["contribs"]:
+        for entry in package["enabled"]:
+            if entry["entry"] == "logging":
+                entry["config"] = {"path": str(log)}
+    await asyncio.to_thread(configured.write_text, tomli_w.dumps(payload))
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",

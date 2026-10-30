@@ -1,1 +1,1 @@
-{{ rows | table(("Package", "Version", "Source")) }}
+{{ rows | table(("Package", "Source")) }}

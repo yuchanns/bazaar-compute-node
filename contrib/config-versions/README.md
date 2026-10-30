@@ -12,5 +12,5 @@ The corresponding entry in `config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-config-versions~=0.3.0rc1"
+package = "bazaar-contrib-config-versions==0.3.*"
 ```

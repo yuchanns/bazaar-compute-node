@@ -43,7 +43,7 @@ Contrib packages and enabled entries are saved in `~/.bcn/config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-logging~=0.3.0rc1"
+package = "bazaar-contrib-logging==0.3.*"
 [[contribs.enabled]]
 entry = "logging"
 [contribs.enabled.config]

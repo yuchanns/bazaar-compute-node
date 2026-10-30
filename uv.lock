@@ -11,12 +11,10 @@ members = [
     "bazaar-contrib-channel",
     "bazaar-contrib-collaboration",
     "bazaar-contrib-config",
-    "bazaar-contrib-config-filesystem",
     "bazaar-contrib-config-versions",
     "bazaar-contrib-harness",
     "bazaar-contrib-invoke",
     "bazaar-contrib-legacy-node-migrations",
-    "bazaar-contrib-logging",
     "bazaar-contrib-manager",
     "bazaar-contrib-messages",
     "bazaar-contrib-messages-node",
@@ -24,13 +22,9 @@ members = [
     "bazaar-contrib-reminder",
     "bazaar-contrib-schema",
     "bazaar-contrib-sidecar",
-    "bazaar-contrib-sidecar-unix",
-    "bazaar-contrib-sidecar-windows",
-    "bazaar-contrib-sqlite",
     "bazaar-contrib-status",
     "bazaar-contrib-storage",
     "bazaar-contrib-timer",
-    "bazaar-contrib-timer-wheel",
     "bazaar-core",
     "bcn-workspace",
 ]
@@ -68,7 +62,6 @@ version = "0.3.0rc9"
 source = { editable = "app" }
 dependencies = [
     { name = "bazaar-contrib-config" },
-    { name = "bazaar-contrib-config-filesystem" },
     { name = "bazaar-contrib-config-versions" },
     { name = "bazaar-contrib-invoke" },
     { name = "bazaar-contrib-manager" },
@@ -79,7 +72,6 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "bazaar-contrib-config", editable = "contrib/config" },
-    { name = "bazaar-contrib-config-filesystem", editable = "contrib/config-filesystem" },
     { name = "bazaar-contrib-config-versions", editable = "contrib/config-versions" },
     { name = "bazaar-contrib-invoke", editable = "contrib/invoke" },
     { name = "bazaar-contrib-manager", editable = "contrib/manager" },
@@ -250,23 +242,6 @@ requires-dist = [
 ]
 
 [[package]]
-name = "bazaar-contrib-config-filesystem"
-version = "0.3.0rc9"
-source = { editable = "contrib/config-filesystem" }
-dependencies = [
-    { name = "bazaar-contrib-config" },
-    { name = "filelock" },
-    { name = "tomli-w" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bazaar-contrib-config", editable = "contrib/config" },
-    { name = "filelock", specifier = ">=3.20.0" },
-    { name = "tomli-w", specifier = ">=1.2.0" },
-]
-
-[[package]]
 name = "bazaar-contrib-config-versions"
 version = "0.3.0rc9"
 source = { editable = "contrib/config-versions" }
@@ -322,25 +297,6 @@ requires-dist = [
     { name = "bazaar-contrib-schema", editable = "contrib/schema" },
     { name = "bazaar-contrib-storage", editable = "contrib/storage" },
     { name = "bazaar-core", editable = "core" },
-]
-
-[[package]]
-name = "bazaar-contrib-logging"
-version = "0.3.0rc9"
-source = { editable = "contrib/logging" }
-dependencies = [
-    { name = "bazaar-contrib-audit" },
-    { name = "bazaar-core" },
-    { name = "concurrent-log-handler" },
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bazaar-contrib-audit", editable = "contrib/audit" },
-    { name = "bazaar-core", editable = "core" },
-    { name = "concurrent-log-handler", specifier = ">=0.9.30,<1" },
-    { name = "pydantic", specifier = ">=2.12.0" },
 ]
 
 [[package]]
@@ -509,63 +465,6 @@ requires-dist = [
 ]
 
 [[package]]
-name = "bazaar-contrib-sidecar-unix"
-version = "0.3.0rc9"
-source = { editable = "contrib/sidecar-unix" }
-dependencies = [
-    { name = "bazaar-contrib-sidecar" },
-    { name = "bazaar-contrib-timer" },
-    { name = "bazaar-core" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
-    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
-    { name = "bazaar-core", editable = "core" },
-]
-
-[[package]]
-name = "bazaar-contrib-sidecar-windows"
-version = "0.3.0rc9"
-source = { editable = "contrib/sidecar-windows" }
-dependencies = [
-    { name = "bazaar-contrib-sidecar" },
-    { name = "bazaar-contrib-timer" },
-    { name = "bazaar-core" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bazaar-contrib-sidecar", editable = "contrib/sidecar" },
-    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
-    { name = "bazaar-core", editable = "core" },
-]
-
-[[package]]
-name = "bazaar-contrib-sqlite"
-version = "0.3.0rc9"
-source = { editable = "contrib/sqlite" }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "bazaar-contrib-storage" },
-    { name = "bazaar-contrib-timer" },
-    { name = "bazaar-core" },
-    { name = "jinja2" },
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.20.0" },
-    { name = "bazaar-contrib-storage", editable = "contrib/storage" },
-    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
-    { name = "bazaar-core", editable = "core" },
-    { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "pydantic", specifier = ">=2.12.0" },
-]
-
-[[package]]
 name = "bazaar-contrib-status"
 version = "0.3.0rc9"
 source = { editable = "contrib/status" }
@@ -601,23 +500,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "bazaar-core", editable = "core" }]
-
-[[package]]
-name = "bazaar-contrib-timer-wheel"
-version = "0.3.0rc9"
-source = { editable = "contrib/timer-wheel" }
-dependencies = [
-    { name = "bazaar-contrib-timer" },
-    { name = "bazaar-core" },
-    { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "bazaar-contrib-timer", editable = "contrib/timer" },
-    { name = "bazaar-core", editable = "core" },
-    { name = "pydantic", specifier = ">=2.12.0" },
-]
 
 [[package]]
 name = "bazaar-core"
@@ -706,18 +588,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
-]
-
-[[package]]
-name = "concurrent-log-handler"
-version = "0.9.30"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "portalocker" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/55/cf8be5f2656a81eb96c2c5e879a9a7d96ffcc7bea49e9d69bd66d4abfcd7/concurrent_log_handler-0.9.30.tar.gz", hash = "sha256:163c97f72efce386065bf58b9d73a17c45f6d626c067c5f1fdb442184ee4c435", size = 46228, upload-time = "2026-10-08T20:33:39.141Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/84/40a531122bf8f97ae608dcdedfc2c770e790aea93f649c72453e409800b4/concurrent_log_handler-0.9.30-py3-none-any.whl", hash = "sha256:50c4c377d57d0f03743c923dfaed53fbd8c85617cbb7f40ed92b7144f49ea895", size = 35532, upload-time = "2026-10-08T20:33:38.152Z" },
 ]
 
 [[package]]
@@ -824,15 +694,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
-]
-
-[[package]]
-name = "portalocker"
-version = "4.4.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/81/cd/d2a23fc80c26f539ac77e7d61bd5e4af5d0b3a09a78ac4c716eead345129/portalocker-4.4.0.tar.gz", hash = "sha256:90c0df939d4ffba121f8e925bbf98ecea8b9381718666ab871a226938d2b63b2", size = 304906, upload-time = "2026-09-19T16:11:09.114Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/6c/07fa2775e87b6e241c2aca5cef79f65e450bc115de55f03cda6251f81690/portalocker-4.4.0-py3-none-any.whl", hash = "sha256:a8e99ea29bfb61766ee0b4008cbaf0651e8e050f7a2485ebf54316480e99226e", size = 129647, upload-time = "2026-09-19T16:11:07.377Z" },
 ]
 
 [[package]]

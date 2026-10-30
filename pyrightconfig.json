@@ -1,5 +1,8 @@
 {
-  "include": ["scripts", "tests/support/src/bcn_sidecar_test"],
+  "include": [
+    "scripts",
+    "tests/run_installed.py"
+  ],
   "pythonVersion": "3.15",
   "pythonPlatform": "All",
   "venvPath": ".",

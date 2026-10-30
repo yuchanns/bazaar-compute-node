@@ -49,7 +49,7 @@ The corresponding entries in `config.toml`:
 version = "5"
 
 [[contribs]]
-package = "bazaar-contrib-invoke~=0.3.0rc1"
+package = "bazaar-contrib-invoke==0.3.*"
 [[contribs.enabled]]
 entry = "commands"
 

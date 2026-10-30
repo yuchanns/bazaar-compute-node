@@ -3,7 +3,6 @@ from __future__ import annotations
 lazy import asyncio
 lazy from contextlib import asynccontextmanager
 
-from bazaar_contrib_sqlite import SqliteConfig, open_database
 from bazaar_contrib_storage import (
     AddColumn,
     Column,
@@ -16,7 +15,6 @@ from bazaar_contrib_storage import (
     Select,
     Table,
 )
-from bazaar_contrib_timer import Timer
 from bazaar_core import Contrib, ContribHub, ContribSpec, Failed, load
 
 from bazaar_contrib_schema import Dependency, Migration, ModuleSchema, Schema
@@ -96,10 +94,9 @@ async def registered(schema: Schema, module: ModuleSchema, entry: str = "schema"
 
 
 async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
-    timer: Timer,
+    open_database,
 ):
-    config = SqliteConfig()
-    async with open_database(config, timer=timer) as database:
+    async with open_database() as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, NOTES), registered(schema, LABELS, "storage"):
@@ -137,7 +134,7 @@ async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
         ),
     )
     for _ in range(2):
-        async with open_database(config, timer=timer) as database:
+        async with open_database() as database:
             schema = Schema(database)
             await schema.start()
             async with (
@@ -158,9 +155,9 @@ async def test_module_dependencies_and_restart_upgrade_preserve_data_and_ledger(
 
 
 async def test_failed_unique_index_migration_can_resume_after_resolving_data(
-    timer: Timer,
+    open_database,
 ):
-    async with open_database(SqliteConfig(), timer=timer) as database:
+    async with open_database() as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, NOTES):
@@ -212,8 +209,8 @@ async def test_failed_unique_index_migration_can_resume_after_resolving_data(
             )
 
 
-async def test_table_ownership_survives_registration_exit(timer: Timer):
-    async with open_database(SqliteConfig(), timer=timer) as database:
+async def test_table_ownership_survives_registration_exit(open_database):
+    async with open_database() as database:
         schema = Schema(database)
         await schema.start()
         async with registered(schema, NOTES):
@@ -222,7 +219,7 @@ async def test_table_ownership_survives_registration_exit(timer: Timer):
             )
         schema = Schema(database)
         await schema.start()
-        async with registered(schema, NOTES, "sqlite") as hub:
+        async with registered(schema, NOTES, "storage") as hub:
             assert any(isinstance(item.state, Failed) for item in hub.snapshots)
         async with registered(schema, NOTES):
             assert (await database.select(Select(table="notes")))[0]["body"] == "owned"
