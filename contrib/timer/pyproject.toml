@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-contrib-timer"
-version = "0.3.0rc10"
+version = "0.3.0rc11"
 description = "Provider-independent timer contracts and timeout scopes"
 readme = "README.md"
 license = "Apache-2.0"

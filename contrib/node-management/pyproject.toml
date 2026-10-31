@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-contrib-node-management"
-version = "0.3.0rc10"
+version = "0.3.0rc11"
 description = "The Bazaar Compute Node Management Contrib"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
