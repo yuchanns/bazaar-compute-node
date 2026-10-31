@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from math import log
 from typing import Literal, cast
-from uuid import uuid7
+from uuid import NAMESPACE_URL, uuid5, uuid7
 
 from bazaar_contrib_messages.actor import Agent
 from bazaar_contrib_messages.actor import Thread as ThreadActor
@@ -855,6 +855,7 @@ class Repository(StorageOperationMixin, RepositoryBase):
         provider_thread_id: str,
         provider_message_id: str,
         *,
+        edit_version: str | None = None,
         direction: MessageDirection | None = None,
     ) -> Message[InboundAttachment | OutboundAttachment] | None:
         row = await self.one(
@@ -866,6 +867,7 @@ class Repository(StorageOperationMixin, RepositoryBase):
                         equal("channel", channel),
                         equal("provider_thread_id", provider_thread_id),
                         equal("provider_message_id", provider_message_id),
+                        equal("edit_version", edit_version or ""),
                     )
                 ),
                 order_by=(Sort(expression=Column(name="seq")),),
@@ -1243,15 +1245,30 @@ class Repository(StorageOperationMixin, RepositoryBase):
             channel,
             provider_thread_id,
             provider_message_id,
+            edit_version=message.edit_version,
             direction=MessageDirection.INBOUND,
         )
         if existing is not None:
             return cast(Message[InboundAttachment], existing)
 
-        message_id = await self._available_message_id(message.message_id)
+        message_id = message.message_id
+        edit_of_message_id = None
+        if message.edit_version is not None:
+            message_id = str(
+                uuid5(NAMESPACE_URL, f"{message_id}:edit:{message.edit_version}")
+            )
+            original = await self.find_message(
+                channel,
+                provider_thread_id,
+                provider_message_id,
+                direction=MessageDirection.INBOUND,
+            )
+            if original is not None:
+                edit_of_message_id = original.message_id
         canonical = replace(
             message,
-            message_id=message_id,
+            message_id=await self._available_message_id(message_id),
+            edit_of_message_id=edit_of_message_id,
             seq=await self._next_message_seq(),
         )
         canonical = await self._resolve_reply(canonical)
@@ -1330,6 +1347,8 @@ class Repository(StorageOperationMixin, RepositoryBase):
                         "channel": canonical.channel,
                         "provider_thread_id": canonical.provider_thread_id,
                         "provider_message_id": canonical.provider_message_id,
+                        "edit_version": canonical.edit_version or "",
+                        "edit_of_message_id": canonical.edit_of_message_id,
                         "provider_time_ms": canonical.provider_time_ms,
                         "received_at_ms": canonical.received_at_ms,
                         "sender": canonical.sender.name
@@ -2031,6 +2050,7 @@ class Repository(StorageOperationMixin, RepositoryBase):
             channel,
             provider_thread_id,
             provider_message_id,
+            edit_version=message.edit_version,
             direction=MessageDirection.INBOUND,
         )
         # the conversation is found by what the message as it arrived says of

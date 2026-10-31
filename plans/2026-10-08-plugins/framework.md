@@ -2525,3 +2525,62 @@ app 的普通 Python 入口提供启动输入和默认资源，core 的运行接
 ### 系统服务（延后）
 
 `bcn system-service` 与 runtime.env 加载作为独立插件交付，本阶段不实现。
+
+## 编辑后的入站消息（2026-10-31）
+
+用户在 channel 中编辑已发送的消息时，节点把编辑后的内容作为一条新的入站消息落库，原消息保持不变，变更历史得以保留。
+对 agent 而言这是一条新消息，消息头带明确的编辑标记并指向原消息，不附带原消息内容。
+下列 Tasks 串行交付，每个 Task 完成后停下等待 review。
+
+| Channel | 编辑事件 | 编辑版本 |
+| --- | --- | --- |
+| Telegram | `edited_message` | `edit_date` |
+| 企微话题 | `topic_event`、`topic_reply_event` 的 `type=2`（[101918](https://developer.work.weixin.qq.com/document/path/101918)），事件不带内容与变更时间，内容按 id 拉取 | 拉取内容中的 `modify_time` |
+| 企微群聊（智能机器人） | 无，长连接（[101463](https://developer.work.weixin.qq.com/document/path/101463)）与回调（[101027](https://developer.work.weixin.qq.com/document/path/101027)）均无编辑事件 | — |
+| 飞书 | 无推送，[事件列表](https://open.feishu.cn/document/server-docs/event-subscription-guide/event-list)的消息事件只有接收、已读、撤回与表情回复，lark-oapi 1.7.5 相同 | — |
+
+Telegram 在 Task 28 接入。企微话题在其插件迁移时改用 edit_version，去掉 0.2 中的 `[Content updated]` 正文前缀与
+`:event:<msgid>` provider id 后缀。企微群聊不推送编辑事件；飞书只能靠轮询消息的 `update_time` 发现编辑，暂不支持。
+
+### Task 27：入站编辑的契约、落库与渲染
+
+- Channel 契约：`InboundMessage` 增加 `edit_version: str | None = None`。为空表示普通消息；非空表示这是对
+  `provider_message_id` 所指消息的一次编辑。同一条 provider 消息的不同编辑取不同的值，同一次编辑的重复推送取相同的值。
+  编辑消息的 `id`、`provider_message_id` 与原消息相同，其余字段按编辑后的内容组装，`occurred_at_ms` 为编辑时间。
+- 身份与去重：入站消息的 provider 身份为 (agent, channel, provider_thread_id, provider_message_id, edit_version)，
+  原消息的 edit_version 为空串。`find_message`、`record_inbound` 与 `_save_inbound_message` 按这一身份去重：
+  同一次编辑重复推送只落一次，多次编辑各落一条。
+- 消息 id：编辑行的 message_id 为 `uuid5(NAMESPACE_URL, f"{原消息 id}:edit:{edit_version}")`，再按现有规则做
+  agent 作用域。原消息 id 不变，reply_to 与引用解析仍落到原消息。
+- 原消息关联：落库时按 (provider_message_id, 空版本) 查找原消息，把其 message_id 写入 `edit_of_message_id`。
+  原消息未落库时该列为空，编辑行按普通消息呈现。多次编辑都指向原消息。
+- 渲染：messages-node 与 bcc 客户端（agent 包的 `cli/messages`）各有一份 `check_message.tpl` 与
+  `read_message.tpl`，在 `edit_of_message_id` 非空时分别输出 ` edit_of=<id>` 与 ` editOf=<id>`，与各自的
+  `reply_to=`、`replyTo=` 写法一致。消息自身的 reply_to 照常保留。
+  `developer_instructions.md` 的 Header fields 增加一行：
+  `` `edit_of=` — ID of the original message. ``
+- 回复：agent 回复编辑行时，outbound 目标沿用该行的 provider_message_id，即 provider 上的原消息。
+- Schema：messages-node 的 `MODULE.migrations` 追加 `Migration(version=2)`：`AddColumn` edit_version（text，非空，
+  默认空串）、`AddColumn` edit_of_message_id（text，可空）、`DropIndex` idx_messages_inbound_provider_identity，
+  再 `CreateIndex` 加入 edit_version 的同名唯一索引，条件仍为 inbound。定义放在 `schema/definitions.py`。
+  新库先建 baseline 再执行版本 2，已有库只执行版本 2。
+
+验证：messages-node 安装测试覆盖原消息去重不变、同一编辑重复推送只落一次、多次编辑各落一条且都指向原消息、
+编辑后回复原消息仍解析到原消息、原消息缺失时 edit_of 为空，以及 check 与 read 的渲染结果。已有库的升级用
+0.3.0rc10 节点的真实数据库副本在本地验证。发布含上述包的 rc。
+
+验收结果：channel、messages、agent、messages-node 四个包的 `scripts/ci.py check` 通过，messages-node 与 agent
+的 `scripts/ci.py test` 通过，wheel 与 sdist 各执行一遍。用本地 0.3.0rc10 测试节点的数据库副本（messages-node
+schema 版本 1，119 条消息）启动新版本节点：版本 2 迁移执行，119 条旧消息的 edit_version 均为空串、
+edit_of_message_id 均为空，`idx_messages_inbound_provider_identity` 含 edit_version。
+
+### Task 28：Telegram 订阅编辑
+
+在 contrib-telegram 交付，依赖 Task 27 发布的 `bazaar-contrib-channel`。
+`getUpdates` 的 allowed_updates 加入 `edited_message`。`_dispatch_update` 对 `edited_message` 使用与 `message`
+相同的读取、激活、引用回填与附件规则，`edit_version` 为 `str(edit_date)`，`occurred_at_ms` 与历史判断均以
+`edit_date` 为准。
+
+e2e 增加一例：驱动 bot 在测试话题发送 `@bot <marker> draft`，再用 `editMessageText` 改为 `@bot <marker> edited`。
+worker 对 `edited` 指令读取消息头中的 edit_of，用 `bcc message read --around <edit_of>` 确认原消息正文含
+`<marker> draft`，再回复 `<marker> edited`；测试断言收到该回复。

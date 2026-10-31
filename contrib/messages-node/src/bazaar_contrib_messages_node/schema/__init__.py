@@ -46,6 +46,23 @@ BASELINE = Migration(
     ),
 )
 
+EDITS = Migration(
+    version=2,
+    name="messages_node_inbound_edits",
+    operations=(
+        s.AddColumn(table="messages", column=definitions.EDIT_VERSION),
+        s.AddColumn(table="messages", column=definitions.EDIT_OF_MESSAGE_ID),
+        s.DropIndex(
+            table="messages",
+            name=definitions.IDX_MESSAGES_INBOUND_PROVIDER_IDENTITY.name,
+        ),
+        s.CreateIndex(
+            table="messages",
+            index=definitions.IDX_MESSAGES_INBOUND_PROVIDER_IDENTITY,
+        ),
+    ),
+)
+
 MODULE = ModuleSchema(
     tables=(
         "_consumer_cursors_v20",
@@ -66,7 +83,7 @@ MODULE = ModuleSchema(
         "outbound_messages",
         "threads",
     ),
-    migrations=(BASELINE,),
+    migrations=(BASELINE, EDITS),
     baseline=BASELINE,
     predecessor=Dependency(package="bazaar-contrib-legacy-node-migrations", version=32),
 )

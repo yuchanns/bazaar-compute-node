@@ -241,6 +241,8 @@ class Message[AttachmentT: InboundAttachment | OutboundAttachment]:
     # down: what a channel's `allowed_chats` is matched against
     provider_chat_id: str | None = None
     provider_message_id: str | None = None
+    edit_version: str | None = None
+    edit_of_message_id: str | None = None
     provider_time_ms: int | None = None
     received_at_ms: int | None = None
     mentions_agent: bool = False

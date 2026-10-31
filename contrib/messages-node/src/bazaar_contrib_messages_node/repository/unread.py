@@ -39,6 +39,8 @@ _MESSAGE_COLUMNS = (
     "channel",
     "provider_thread_id",
     "provider_message_id",
+    "edit_version",
+    "edit_of_message_id",
     "provider_time_ms",
     "received_at_ms",
     "sender",

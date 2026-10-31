@@ -41,6 +41,30 @@ IDX_MESSAGES_INBOUND_PROVIDER_IDENTITY_V18 = s.Index(
 )
 
 
+EDIT_VERSION = s.ColumnDefinition(name="edit_version", type="text", default="")
+
+
+EDIT_OF_MESSAGE_ID = s.ColumnDefinition(
+    name="edit_of_message_id", type="text", nullable=True
+)
+
+
+IDX_MESSAGES_INBOUND_PROVIDER_IDENTITY = s.Index(
+    name="idx_messages_inbound_provider_identity",
+    columns=(
+        "agent_id",
+        "channel",
+        "provider_thread_id",
+        "provider_message_id",
+        "edit_version",
+    ),
+    unique=True,
+    where=s.Compare(
+        left=s.Column(name="direction"), operator="=", right=s.Value(value="inbound")
+    ),
+)
+
+
 IDX_MESSAGES_OUTBOUND_STATE_CREATED_V18 = s.Index(
     name="idx_messages_outbound_state_created",
     columns=("agent_id", "delivery_state", "created_at_ms"),
