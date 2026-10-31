@@ -2569,6 +2569,11 @@ Telegram 在 Task 28 接入。企微话题在其插件迁移时改用 edit_versi
 编辑后回复原消息仍解析到原消息、原消息缺失时 edit_of 为空，以及 check 与 read 的渲染结果。已有库的升级用
 0.3.0rc10 节点的真实数据库副本在本地验证。发布含上述包的 rc。
 
+验收结果：channel、messages、agent、messages-node 四个包的 `scripts/ci.py check` 通过，messages-node 与 agent
+的 `scripts/ci.py test` 通过，wheel 与 sdist 各执行一遍。用本地 0.3.0rc10 测试节点的数据库副本（messages-node
+schema 版本 1，119 条消息）启动新版本节点：版本 2 迁移执行，119 条旧消息的 edit_version 均为空串、
+edit_of_message_id 均为空，`idx_messages_inbound_provider_identity` 含 edit_version。
+
 ### Task 28：Telegram 订阅编辑
 
 在 contrib-telegram 交付，依赖 Task 27 发布的 `bazaar-contrib-channel`。

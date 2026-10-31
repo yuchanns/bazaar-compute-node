@@ -1,4 +1,4 @@
-[target={{ target }} msg={{ message_id }} time={{ timestamp }} type={{ sender_kind }}{% if reply_to_message_id is not none %} reply_to={{ reply_to_message_id }}{% endif %}] {% if sender is not none %}{{ sender }}: {% endif %}{{ body }}{{ attachment_suffix }}{% if system_message_kind == "reminder" %}
+[target={{ target }} msg={{ message_id }} time={{ timestamp }} type={{ sender_kind }}{% if reply_to_message_id is not none %} reply_to={{ reply_to_message_id }}{% endif %}{% if edit_of_message_id is not none %} edit_of={{ edit_of_message_id }}{% endif %}] {% if sender is not none %}{{ sender }}: {% endif %}{{ body }}{{ attachment_suffix }}{% if system_message_kind == "reminder" %}
 ({% if repeats %}to snooze/update/cancel{% else %}to snooze/cancel{% endif %}: bcc reminder --help)
 Respond as appropriate. Complete all your work before stopping.
 Reply in the channel or create/reply in a thread as appropriate; use each message's `target` and `msg` fields to choose the exact target.{% elif system_message_kind == "handoff" %}

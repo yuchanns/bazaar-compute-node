@@ -101,6 +101,7 @@ async def bind(ctx: Context) -> AsyncIterator[None]:
                     channel_identity=input.agent_id,
                     provider_thread_id=inbound.target.thread_id,
                     provider_message_id=inbound.provider_message_id or inbound.id,
+                    edit_version=inbound.edit_version,
                     received_at_ms=inbound.occurred_at_ms,
                     mentions_agent=f"@{input.agent_name}" in inbound.body,
                     metadata={

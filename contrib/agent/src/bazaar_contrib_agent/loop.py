@@ -493,6 +493,7 @@ class AgentLoop:
             provider_thread_id=inbound.target.thread_id,
             provider_chat_id=inbound.provider_chat_id,
             provider_message_id=inbound.provider_message_id,
+            edit_version=inbound.edit_version,
             provider_time_ms=inbound.occurred_at_ms,
             received_at_ms=inbound.received_at_ms
             if inbound.received_at_ms is not None

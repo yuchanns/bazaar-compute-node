@@ -173,6 +173,7 @@ class ChannelMessage(BaseModel):
     message_type: str = "text"
     target_presentation: ChannelTargetPresentation | None = None
     reply_to_message_id: str | None = None
+    edit_version: str | None = None
     received_at_ms: int | None = None
     provider_payload_ref: str | None = None
     attachments: tuple[Attachment, ...] = ()

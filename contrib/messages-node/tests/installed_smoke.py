@@ -15,7 +15,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from time import monotonic
 from typing import Any, cast
-from uuid import uuid7
+from uuid import NAMESPACE_URL, uuid5, uuid7
 
 import tomli_w
 from bazaar_compute_node.boot import build
@@ -60,8 +60,10 @@ class Peer:
         target: str = "peer",
         reply_to: str | None = None,
         attachments: tuple[Path, ...] = (),
+        id: str | None = None,
+        edit_version: str | None = None,
     ):
-        id = str(uuid7())
+        id = id or str(uuid7())
         await self.write(
             {
                 "inbound": {
@@ -73,6 +75,7 @@ class Peer:
                     },
                     "sender": {"id": sender_id or sender, "name": sender},
                     "body": body,
+                    "edit_version": edit_version,
                     "attachments": [
                         {"name": path.name, "path": str(path)} for path in attachments
                     ],
@@ -141,6 +144,20 @@ class Peer:
     async def aclose(self):
         self.writer.close()
         await self.writer.wait_closed()
+
+
+def inbound_edits(directory: Path, provider_message_id: str) -> list[tuple]:
+    with closing(
+        sqlite3.connect(
+            (directory / ".bcn" / "bcn.sqlite3").as_uri() + "?mode=ro", uri=True
+        )
+    ) as connection:
+        return connection.execute(
+            "SELECT edit_version, edit_of_message_id FROM messages"
+            " WHERE agent_id = ? AND direction = ? AND provider_message_id = ?"
+            " ORDER BY seq",
+            ("Cloud", "inbound", provider_message_id),
+        ).fetchall()
 
 
 def stored_messages(directory: Path) -> dict[str, dict[str, Any]]:
@@ -559,6 +576,58 @@ async def exercise(directory: Path):
                 directory, "Cloud", "message", "read", "--target", "dm:@hanchin"
             )
             assert "已更新海报日期和时间" in persisted
+            # Each edit is its own message pointing at the original; a
+            # redelivered edit is stored once.
+            original = await peers["Cloud"].inbound("印刷数量先按五百份准备。")
+            await received("Cloud", original)
+            for version, body in (
+                ("1", "印刷数量改成八百份。"),
+                ("1", "印刷数量改成八百份。"),
+                ("2", "印刷数量改成一千份。"),
+            ):
+                await peers["Cloud"].inbound(body, id=original, edit_version=version)
+            await received("Cloud", str(uuid5(NAMESPACE_URL, f"{original}:edit:2")))
+            assert await asyncio.to_thread(inbound_edits, directory, original) == [
+                ("", None),
+                ("1", original),
+                ("2", original),
+            ]
+            checked = await bcc(directory, "Cloud", "message", "check")
+            assert checked.count(f"edit_of={original}]") == 2, checked
+            assert "八百份" in checked and "一千份" in checked
+            edited = await bcc(
+                directory,
+                "Cloud",
+                "message",
+                "read",
+                "--target",
+                "dm:@hanchin",
+                "--around",
+                original,
+            )
+            assert edited.count(f"editOf={original}]") == 2, edited
+            assert "五百份" in edited
+            # A reply still refers to the original, and an edit of a message
+            # never stored is kept without a link.
+            answer = await peers["Cloud"].inbound("就按一千份下单。", reply_to=original)
+            await received("Cloud", answer)
+            replies = await request("Cloud", "message", "read", target="dm:@hanchin")
+            assert (
+                next(
+                    message["reply_to_message_id"]
+                    for message in replies["result"]["messages"]
+                    if message["message_id"] == answer
+                )
+                == original
+            )
+            unseen = str(uuid7())
+            await peers["Cloud"].inbound(
+                "装订方式改成骑马钉。", id=unseen, edit_version="1"
+            )
+            await received("Cloud", str(uuid5(NAMESPACE_URL, f"{unseen}:edit:1")))
+            assert await asyncio.to_thread(inbound_edits, directory, unseen) == [
+                ("1", None)
+            ]
         finally:
             for peer in peers.values():
                 await peer.aclose()

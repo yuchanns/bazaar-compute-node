@@ -151,6 +151,13 @@ def message_from_row(
             provider_payload_ref=_optional_text(
                 row["provider_payload_ref"], "provider_payload_ref"
             ),
+            edit_version=_string_value(
+                row["edit_version"], "edit_version", allow_empty=True
+            )
+            or None,
+            edit_of_message_id=_optional_text(
+                row["edit_of_message_id"], "edit_of_message_id"
+            ),
         )
     return Message(
         **common,

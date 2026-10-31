@@ -84,6 +84,8 @@ class InboundMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: str = Field(min_length=1)
     provider_message_id: str | None = Field(default=None, min_length=1)
+    # an edit of provider_message_id: equal for redeliveries of one edit, distinct across edits
+    edit_version: str | None = Field(default=None, min_length=1)
     channel_session_id: str = Field(min_length=1)
     thread_id: str = Field(min_length=1)
     target: ChannelTarget

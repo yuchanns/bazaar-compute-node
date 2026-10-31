@@ -74,6 +74,7 @@ Header fields:
 - `msg=` — message ID. Use it exactly as provided when locating message history or thread context.
 - `time=` — timestamp.
 - `type=` — sender kind. Values are `human`, `agent`, or `system`.
+- `edit_of=` — ID of the original message.
 
 `type=system` messages announce state changes in the runtime or conversation. They are informational — do not reply to them unless they clearly request action.
 

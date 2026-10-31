@@ -96,6 +96,7 @@ def serialize_message(
         ],
         "body": message.body,
         "reply_to_message_id": message.reply_to_message_id,
+        "edit_of_message_id": message.edit_of_message_id,
         "delivery_state": (
             message.delivery_state.value
             if message.direction is MessageDirection.OUTBOUND
