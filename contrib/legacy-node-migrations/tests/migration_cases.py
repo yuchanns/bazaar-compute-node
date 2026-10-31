@@ -79,6 +79,12 @@ async def registered(schema, modules):
         yield
 
 
+def columns_of(rows, reference):
+    """Keep the columns the reference rows carry; later module versions add columns."""
+    columns = tuple(reference[0]) if reference else ()
+    return tuple({column: row[column] for column in columns} for row in rows)
+
+
 @pytest.mark.parametrize("version", range(1, 33))
 async def test_published_message_upgrade_preserves_business_data_and_original_ledger(
     tmp_path: Path,
@@ -122,7 +128,7 @@ async def test_published_message_upgrade_preserves_business_data_and_original_le
                 if await reference.table_exists(table):
                     rows = await database.select(Select(table=table))
                     expected_rows = await reference.select(Select(table=table))
-                    assert sorted(map(repr, rows)) == sorted(
+                    assert sorted(map(repr, columns_of(rows, expected_rows))) == sorted(
                         map(repr, expected_rows)
                     ), table
         # 0.2's v9 adds a column to its ledger; every original entry stays as written.
@@ -164,7 +170,11 @@ async def test_new_database_uses_current_baseline_and_retains_new_data(
             assert {row["package"] for row in history} == {
                 f"bazaar-contrib-{name}" for name in modules
             }
-            assert all(row["version"] == 1 for row in history)
+            assert {(row["package"], row["version"]) for row in history} == {
+                (f"bazaar-contrib-{name}", version)
+                for name, module in modules.items()
+                for version in range(1, module.version + 1)
+            }
 
 
 async def test_current_messages_keep_search_in_sync_with_the_sequence_key(
@@ -281,7 +291,12 @@ async def test_registered_03_database_accepts_owned_reminder_versions_and_restar
             async with registered(schema, dict(reversed(upgraded.items()))):
                 reminders = await database.select(Select(table="reminders"))
                 assert reminders[0]["priority"] == 5
-                assert await database.select(Select(table="messages")) == messages
+                assert (
+                    columns_of(
+                        await database.select(Select(table="messages")), messages
+                    )
+                    == messages
+                )
                 assert await database.select(Select(table="settings")) == settings
                 assert (
                     await database.select(Select(table="schema_migrations")) == original
@@ -348,9 +363,9 @@ async def test_partial_03_history_resumes_under_installed_identity_and_keeps_old
                                 expected_rows = await reference.select(
                                     Select(table=table)
                                 )
-                                assert sorted(map(repr, rows)) == sorted(
-                                    map(repr, expected_rows)
-                                ), table
+                                assert sorted(
+                                    map(repr, columns_of(rows, expected_rows))
+                                ) == sorted(map(repr, expected_rows)), table
                     await database.insert(
                         Insert(
                             table="settings",

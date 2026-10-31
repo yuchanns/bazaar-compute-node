@@ -2567,7 +2567,8 @@ Telegram 在 Task 28 接入。企微话题在其插件迁移时改用 edit_versi
 
 验证：messages-node 安装测试覆盖原消息去重不变、同一编辑重复推送只落一次、多次编辑各落一条且都指向原消息、
 编辑后回复原消息仍解析到原消息、原消息缺失时 edit_of 为空，以及 check 与 read 的渲染结果。已有库的升级用
-0.3.0rc10 节点的真实数据库副本在本地验证。发布含上述包的 rc。
+0.3.0rc10 节点的真实数据库副本在本地验证。legacy-node-migrations 的迁移用例只比对已发布 schema 与快照原有的列，
+新库账本按各模块版本链核对。发布含上述包的 rc。
 
 验收结果：channel、messages、agent、messages-node 四个包的 `scripts/ci.py check` 通过，messages-node 与 agent
 的 `scripts/ci.py test` 通过，wheel 与 sdist 各执行一遍。用本地 0.3.0rc10 测试节点的数据库副本（messages-node
