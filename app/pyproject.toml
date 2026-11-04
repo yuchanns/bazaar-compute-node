@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 node = ["bazaar-contrib-node-management~=0.3.0rc1"]
+server = ["bazaar-contrib-server-management~=0.3.0rc1"]
 
 [project.urls]
 Repository = "https://github.com/yuchanns/bazaar-compute-node"
