@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
+lazy import os
 lazy import sys
+lazy import tomllib
 lazy from collections.abc import Mapping
 lazy from copy import deepcopy
 lazy from hashlib import sha256
@@ -138,6 +140,20 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
     add(transport, transport, endpoint)
     add("node-health", "node-management")
     add("node-upgrade", "node-management")
+    bcs = Path(os.environ.get("BCN_HOME") or Path.home()) / ".bcs" / "config.toml"
+    if bcs.is_file():
+        server = tomllib.loads(bcs.read_text(encoding="utf-8"))
+        storage = server.get("storage", "sqlite")
+        add(
+            "http", "http", {"listen": server["listen"]} if "listen" in server else None
+        )
+        # 0.2 read a storage's own settings from a table named after it
+        add(
+            "server-database",
+            "server-database",
+            {"storage": storage, "storage_options": server.get(storage, {})},
+        )
+        add("server-migrations", "server-migrations")
     changes.extend(
         [
             FieldChange(
