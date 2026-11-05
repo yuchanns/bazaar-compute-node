@@ -1,0 +1,33 @@
+/* Flat everywhere: what the implementation changes in the approved tokens.
+   No gradients, no glows; stripes and scallops stay (they are hard-edged). */
+
+:root[data-theme] { --bg-glow: none; }
+body { background: var(--bg); }
+.side::after { display: none; }
+.nav.on::before, .tab.on::after { box-shadow: none; }
+.btn.primary, :root[data-theme="day"] .btn.primary { background: var(--saffron); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), inset 0 -1px 0 rgba(0, 0, 0, .14); }
+.pip.work { box-shadow: none; }
+.h1 { background: #f5a83a; } .h2 { background: #2fb996; } .h3 { background: #8f9dff; }
+.h4 { background: #ef7a5c; } .h5 { background: #b784f5; } .h6 { background: #9fb0c3; }
+.hp { background: #2c3442; } :root[data-theme="day"] .hp { background: #ddd2bf; }
+.vendor.focus { background: var(--saffron-soft); }
+.kpi.hot { background: var(--surface); }
+.profile .av.lg { box-shadow: 0 0 0 4px var(--surface), 0 0 0 5px var(--saffron-line); }
+.live-turn { background: var(--surface); }
+.step.now .k { box-shadow: 0 0 0 4px var(--saffron-soft); }
+.g.tg { --brand: #2aabee; } .g.lark { --brand: #3370ff; } .g.wecom { --brand: #1f8cf0; }
+.g.claudecode { --brand: #d97757; } .g.codex { --brand: #1a1a1a; }
+
+/* status lanterns stay as designed, filled flat */
+.lantern.work::after { background: var(--saffron); box-shadow: none; animation: breathe 2.4s ease-in-out infinite; }
+/* working: the lantern brightens and dims, slowly, without a glow */
+@keyframes breathe { 50% { background: color-mix(in srgb, var(--saffron) 40%, #fff6d6); } }
+.lantern.on::after { background: var(--jade); box-shadow: none; }
+.lantern.fail::after { background: var(--crimson); box-shadow: none; }
+
+/* the stall cards' awning, drawn like the street's (awning.js) */
+:root[data-theme="night"] { --awning-alt: #d9cbb0; --awning-pole: #3b3045; }
+:root[data-theme="day"] { --awning-alt: #efdfc0; --awning-pole: #b98b5b; }
+.awning-svg { display: block; }
+.stall.off .awning-svg { filter: grayscale(1) brightness(.7); }
+.live::before { box-shadow: 0 0 0 3px rgba(52, 195, 160, .25); }

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="utf-8">
+<title>Bazaar · 有马佳奈</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,500..700,0..100;1,9..144,500..700,0..100&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=block" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="flat.css">
+<script src="logos.js"></script>
+<script src="ui.js"></script>
+<script src="awning.js"></script>
+<style>
+  .content { padding-top: 20px; }
+  .tabs { margin: 16px -28px 0; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" data-side="agents"></aside>
+  <main class="main">
+    <header class="top">
+      <div class="crumbs"><span>智能体</span><i data-i="right" class="xs"></i><b>有马佳奈</b></div>
+      <div class="actions">
+        <div class="btn ghost"><i data-i="share" class="sm"></i>共享</div>
+        <div class="btn"><i data-i="pencil" class="sm"></i>编辑配置</div>
+        <div class="icon-btn"><i data-i="more"></i></div>
+      </div>
+    </header>
+    <section class="content">
+      <div class="profile">
+        <div class="av lg h1">佳</div>
+        <div>
+          <h2>有马佳奈 <span class="status work"><span class="lantern work"></span>正在工作 · 3 分 12 秒</span></h2>
+          <div class="facts">
+            <span class="fact"><span class="g tg"><i data-l="telegram"></i></span><b>Telegram</b> @armslave_bot</span>
+            <span class="fact"><span class="g claudecode"><i data-l="claudecode"></i></span><b>Claude Code</b> claude-opus-5-5 · 思考强度 高</span>
+            <span class="fact"><i data-i="monitor"></i>运行在 <b>kana-vm</b></span>
+            <span class="fact"><i data-i="chats"></i>每个会话独立</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="tabs">
+        <span class="tab on"><i data-i="activity" class="sm"></i>动态</span>
+        <span class="tab"><i data-i="chats" class="sm"></i>会话 <span class="n">12</span></span>
+        <span class="tab"><i data-i="folder" class="sm"></i>工作区</span>
+        <span class="tab"><i data-i="book" class="sm"></i>技能 <span class="n">8</span></span>
+        <span class="tab"><i data-i="settings" class="sm"></i>配置</span>
+        <span class="tab"><i data-i="share" class="sm"></i>共享</span>
+      </nav>
+
+      <div class="cols">
+        <div class="stack">
+          <div class="card live-turn">
+            <div class="turn-hd">
+              <span class="lantern work"></span>
+              <h3>正在处理 #bazaar-compute 开发</h3>
+              <span class="chip"><span class="g tg"><i data-l="telegram"></i></span>群聊</span>
+              <span class="clock"><i data-i="clock" class="xs"></i>03:12</span>
+            </div>
+            <div class="quote"><div class="av xs h1">Y</div><div><b>yuchanns</b>然后接下来是啥</div></div>
+            <div class="steps">
+              <div class="step"><span class="k"><i data-i="check"></i></span><span>读取会话记录 · 最近 40 条</span><span class="d">0.4s</span></div>
+              <div class="step"><span class="k"><i data-i="check"></i></span><span>运行命令 <code>git log --oneline -3 origin/0.3</code></span><span class="d">1.2s</span></div>
+              <div class="step"><span class="k"><i data-i="check"></i></span><span>读取文件 <code>plans/2026-10-08-plugins/roadmap.md</code></span><span class="d">0.3s</span></div>
+              <div class="step now"><span class="k"><i data-i="sparkles"></i></span><span>正在整理第 11 阶段的建议…</span><span class="d">00:41</span></div>
+            </div>
+            <div class="turn-ft"><span>本轮 <b>38.2k</b> 输入</span><span><b>2.1k</b> 输出</span><span>缓存命中 <b>71%</b></span><span style="margin-left:auto">已调用工具 <b>6</b> 次</span></div>
+          </div>
+
+          <div class="card" style="flex:1;min-height:0;overflow:hidden">
+            <div class="card-hd"><h3>今天</h3><span class="sub">14 轮 · 1 次失败</span><span class="more">完整活动记录<i data-i="right" class="xs"></i></span></div>
+            <div class="turns">
+              <div class="turn"><span class="tm">15:20</span><span class="where"><i data-i="alarm" class="xs"></i>提醒到期</span><span class="what">跟进 PR #145 的 CI 与 Codex 结果</span><span class="ok"><i data-i="okc" class="xs"></i>完成</span><span class="dur">22s</span><span class="tok">6.4k</span></div>
+              <div class="turn"><span class="tm">14:05</span><span class="where"><span class="g tg"><i data-l="telegram"></i></span>#bazaar-compute 开发</span><span class="what">看看 opendal 的 README 怎么写</span><span class="ok"><i data-i="okc" class="xs"></i>完成</span><span class="dur">3m10s</span><span class="tok">96k</span></div>
+              <div class="turn"><span class="tm">13:48</span><span class="where"><span class="g tg"><i data-l="telegram"></i></span>#bazaar-compute 开发</span><span class="what">README 太口语化，不像给普通用户看的</span><span class="bad"><i data-i="alert" class="xs"></i>失败</span><span class="dur">41s</span><span class="tok">12k</span></div>
+              <div class="turn"><span class="tm">11:30</span><span class="where"><span class="g tg"><i data-l="telegram"></i></span>与 yuchanns 的私聊</span><span class="what">帮我确认一下 rc17 的发布状态</span><span class="ok"><i data-i="okc" class="xs"></i>完成</span><span class="dur">1m02s</span><span class="tok">18k</span></div>
+              <div class="turn"><span class="tm">10:03</span><span class="where"><span class="g tg"><i data-l="telegram"></i></span>#bazaar-compute 开发</span><span class="what">待合并的你合一下，其他的都删了</span><span class="ok"><i data-i="okc" class="xs"></i>完成</span><span class="dur">2m14s</span><span class="tok">41k</span></div>
+              <div class="turn"><span class="tm">09:12</span><span class="where"><span class="g tg"><i data-l="telegram"></i></span>#bazaar-compute 开发</span><span class="what">我们还有什么分支需要合并吗</span><span class="ok"><i data-i="okc" class="xs"></i>完成</span><span class="dur">48s</span><span class="tok">12k</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stack">
+          <div class="card">
+            <div class="card-hd"><h3>状态</h3><span class="more"><i data-i="refresh" class="xs"></i>刷新</span></div>
+            <div class="kv">
+              <div class="kv-row"><span>连接</span><span class="v" style="color:var(--jade)"><i data-i="okc" class="xs"></i>正常</span></div>
+              <div class="kv-row"><span>机器人</span><span class="v">@armslave_bot</span></div>
+              <div class="kv-row"><span>连接于</span><span class="v num">今天 09:02</span></div>
+              <div class="kv-row"><span>最后活动</span><span class="v">刚刚</span></div>
+              <div class="kv-row"><span>最近错误</span><span class="v muted" style="font-weight:500">无</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><h3>今日用量</h3><span class="more">按小时</span></div>
+            <div class="usage-big"><span class="val num">412k</span><span class="sub">tokens · $1.38 · 缓存命中 68%</span></div>
+            <div class="bars">
+              <i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i>
+              <i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i style="height:22%"></i><i style="height:48%"></i><i style="height:66%"></i><i style="height:40%"></i>
+              <i style="height:30%"></i><i style="height:58%"></i><i style="height:92%"></i><i style="height:74%"></i><i class="c" style="height:28%"></i><i class="z" style="height:6%"></i>
+              <i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i><i class="z" style="height:6%"></i>
+            </div>
+            <div class="axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+          </div>
+          <div class="card" style="flex:1;min-height:0;overflow:hidden">
+            <div class="card-hd"><h3>提醒</h3><span class="sub">2 个待触发</span></div>
+            <div class="rem"><div class="ic"><i data-i="alarm" class="sm"></i></div><div><div class="when">明天 09:00</div><div class="what">跟进 #145 的 review 结论 · #bazaar-compute 开发</div></div></div>
+            <div class="rem"><div class="ic"><i data-i="alarm" class="sm"></i></div><div><div class="when">每周一 10:00</div><div class="what">整理上周进展 · 与 yuchanns 的私聊</div></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

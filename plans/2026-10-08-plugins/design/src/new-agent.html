@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="utf-8">
+<title>Bazaar · 新建智能体</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,500..700,0..100;1,9..144,500..700,0..100&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=block" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="flat.css">
+<script src="logos.js"></script>
+<script src="ui.js"></script>
+<script src="awning.js"></script>
+<style>
+  .wizard { display: grid; grid-template-columns: 196px 1fr 320px; gap: 24px; height: 100%; min-height: 0; }
+  .stepper { padding-top: 6px; position: relative; }
+  .st { display: grid; grid-template-columns: 32px 1fr; gap: 12px; padding: 10px 0 18px; position: relative; }
+  .st:not(:last-child)::after { content: ""; position: absolute; left: 15px; top: 46px; bottom: -6px; width: 2px; border-radius: 2px; background: var(--line); }
+  .st.done::after { background: var(--jade) !important; }
+  .st.now::after { background: var(--saffron) !important; }
+  .st .n { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: var(--surface); border: 1.5px solid var(--line-strong); color: var(--muted); z-index: 1; }
+  .st.done .n { background: var(--jade); border-color: var(--jade); color: #04241c; }
+  .st.now .n { background: var(--saffron); border-color: var(--saffron); color: var(--saffron-ink); box-shadow: 0 0 0 5px var(--saffron-soft), 0 0 18px var(--saffron); }
+  .st b { display: block; font-size: 14px; font-weight: 650; margin-top: 5px; }
+  .st span { font-size: 12.5px; color: var(--muted); }
+  .st.now b { color: var(--saffron); }
+  .form { display: flex; flex-direction: column; min-height: 0; }
+  .form .card { padding: 22px 24px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .q { margin: 0; font-family: var(--font-display); font-size: 24px; font-weight: 650; letter-spacing: -.01em; }
+  .q-sub { margin: 6px 0 18px; color: var(--muted); font-size: 13.5px; }
+  .picks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .pick { border-radius: var(--r-lg); border: 1.5px solid var(--line); background: var(--surface-2); padding: 14px; position: relative; min-height: 112px; }
+  .pick .logo { width: 36px; height: 36px; border-radius: 11px; display: grid; place-items: center; color: #fff; font-weight: 800; font-size: 15px; }
+  .pick .logo svg { width: 18px; height: 18px; }
+  .pick .logo.tg, .pick .logo.lark, .pick .logo.wecom { background: var(--raised); border: 1px solid var(--line); }
+  .pick .logo.tg { color: var(--tg); } .pick .logo.lark { color: var(--lark); } .pick .logo.wecom { color: var(--wecom); }
+  .pick .logo.tg svg, .pick .logo.lark svg, .pick .logo.wecom svg { width: 22px; height: 22px; }
+  .pick b { display: block; margin-top: 10px; font-size: 14px; }
+  .pick span { font-size: 12px; color: var(--muted); }
+  .pick.on { border-color: var(--saffron); background: var(--surface-2); box-shadow: 0 0 0 4px var(--saffron-soft); }
+  .pick.on .tick { position: absolute; top: 12px; right: 12px; width: 22px; height: 22px; border-radius: 50%; background: var(--saffron); color: var(--saffron-ink); display: grid; place-items: center; }
+  .pick.on .tick svg { width: 13px; height: 13px; stroke-width: 2.6; }
+  .pick.more { border-style: dashed; background: transparent; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; color: var(--muted); }
+  .pick.more .logo { background: var(--sunken); color: var(--muted); border: 1px dashed var(--line-strong); }
+  .cfg { margin-top: 20px; border-top: 1px dashed var(--line); padding-top: 18px; display: grid; gap: 16px; }
+  .cfg h4 { margin: 0; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .cfg h4 .chip { font-weight: 500; }
+  .secret-note { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--r-md); background: var(--jade-soft); color: var(--text-2); font-size: 12.5px; }
+  .secret-note svg { color: var(--jade); margin-top: 1px; }
+  .foot { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 18px; }
+  .foot .right { margin-left: auto; display: flex; gap: 10px; }
+  .preview { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+  .namecard { padding: 0; overflow: hidden; }
+  .namecard { --stripe: var(--jade); }
+  .namecard .awning-svg { height: 72px; }
+  .namecard .who { padding: 0 20px 16px; margin-top: -28px; position: relative; }
+  .namecard .who .av.lg { border: 4px solid var(--surface); box-shadow: 0 10px 24px -10px rgba(0,0,0,.6); }
+  .namecard .who h3 { margin: 10px 0 2px; font-family: var(--font-display); font-size: 24px; font-weight: 650; }
+  .namecard .kv { padding: 0 20px 14px; }
+  .pending { color: var(--faint) !important; font-weight: 500 !important; border: 1px dashed var(--line-strong); padding: 1px 8px; border-radius: 6px; font-size: 12px; }
+  .after { padding: 4px 16px 14px; }
+  .after div { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; font-size: 13px; color: var(--text-2); }
+  .after svg { color: var(--jade); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" data-side="agents"></aside>
+  <main class="main">
+    <header class="top">
+      <div class="crumbs"><span>智能体</span><i data-i="right" class="xs"></i><b>新建智能体</b></div>
+      <div class="actions"><div class="btn ghost">取消</div></div>
+    </header>
+    <section class="content">
+      <div class="wizard">
+        <div class="stepper">
+          <div class="st done"><span class="n"><i data-i="check" class="sm"></i></span><div><b>基本信息</b><span>小满 · aqua-mbp</span></div></div>
+          <div class="st now"><span class="n">2</span><div><b>渠道</b><span>在哪里收发消息</span></div></div>
+          <div class="st"><span class="n">3</span><div><b>运行时</b><span>用什么思考和工作</span></div></div>
+          <div class="st"><span class="n">4</span><div><b>确认</b><span>检查后创建</span></div></div>
+        </div>
+
+        <div class="form">
+          <div class="card">
+            <h2 class="q">小满在哪里收发消息？</h2>
+            <p class="q-sub">可以添加多个渠道。这里列出的是 aqua-mbp 上已安装的渠道 contrib。</p>
+            <div class="picks">
+              <div class="pick"><span class="g tg" style="--s:36px"><i data-l="telegram"></i></span><b>Telegram</b><span>Bot Token</span></div>
+              <div class="pick on"><span class="tick"><i data-i="check"></i></span><span class="g lark" style="--s:36px"><i data-l="lark"></i></span><b>飞书</b><span>自建应用</span></div>
+              <div class="pick"><span class="g wecom" style="--s:36px"><i data-l="wecom"></i></span><b>企业微信</b><span>智能机器人</span></div>
+              <div class="pick more"><div class="logo"><i data-i="store" class="sm"></i></div><b style="color:var(--text-2)">更多渠道</b><span>市场即将上线</span></div>
+            </div>
+
+            <div class="cfg">
+              <h4><span class="g lark"><i data-l="lark"></i></span>飞书设置</h4>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+                <div class="field"><label>App ID</label><div class="input"><span class="mono">cli_a7f3e29c81b4d00e</span></div></div>
+                <div class="field"><label>区域</label><div class="seg" style="height:40px;align-items:center"><span class="on">飞书 open.feishu.cn</span><span>Lark</span></div></div>
+              </div>
+              <div class="field">
+                <label>App Secret</label>
+                <div class="input focus"><i data-i="key" class="sm" style="color:var(--saffron)"></i><span class="mono" style="letter-spacing:.06em">••••••••••••••••••••••••••Zk</span><span class="suffix">已粘贴</span></div>
+                <span class="hint">在飞书开放平台创建自建应用，开启机器人能力，并通过长连接订阅 im.message.receive_v1。</span>
+              </div>
+              <div class="secret-note"><i data-i="shield" class="sm"></i><div>凭据只写入 <b>aqua-mbp</b> 这台电脑，不保存在服务端。保存后不再显示，之后只能替换。</div></div>
+            </div>
+
+            <div class="foot">
+              <div class="btn ghost"><i data-i="reply" class="sm"></i>上一步</div>
+              <div class="right"><div class="btn">再添加一个渠道</div><div class="btn primary">下一步：运行时<i data-i="right" class="sm"></i></div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview">
+          <div class="card namecard">
+            <div class="awning"></div>
+            <div class="who">
+              <div class="av lg h2">满</div>
+              <h3>小满</h3>
+              <span class="status off"><span class="lantern off"></span>尚未创建</span>
+            </div>
+            <div class="kv">
+              <div class="kv-row"><span>电脑</span><span class="v"><span class="online" style="font-size:12.5px">aqua-mbp</span></span></div>
+              <div class="kv-row"><span>会话模式</span><span class="v">每个会话独立</span></div>
+              <div class="kv-row"><span>空闲回收</span><span class="v num">600 秒</span></div>
+              <div class="kv-row"><span>渠道</span><span class="v"><span class="chip"><span class="g lark"><i data-l="lark"></i></span>飞书</span></span></div>
+              <div class="kv-row"><span>运行时</span><span class="v"><span class="pending">下一步选择</span></span></div>
+            </div>
+          </div>
+          <div class="card" style="flex:1;min-height:0">
+            <div class="card-hd"><h3>创建之后</h3></div>
+            <div class="after">
+              <div><i data-i="okc" class="sm"></i><span>配置写入 aqua-mbp，小满随即在那台电脑上启动。</span></div>
+              <div><i data-i="okc" class="sm"></i><span>和小满的新会话会先出现在「新联系人」里，你允许后它才开始回复。</span></div>
+              <div><i data-i="okc" class="sm"></i><span>名字、渠道和运行时之后都可以在「配置」里修改。</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

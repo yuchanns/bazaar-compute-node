@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="utf-8">
+<title>Bazaar · 会话</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,500..700,0..100;1,9..144,500..700,0..100&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=block" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="flat.css">
+<script src="logos.js"></script>
+<script src="ui.js"></script>
+<script src="awning.js"></script>
+<style>
+  .content { padding: 0; }
+  .panes { display: grid; grid-template-columns: 340px 1fr 292px; height: 100%; min-height: 0; }
+  .pane { min-height: 0; display: flex; flex-direction: column; }
+  .pane + .pane { border-left: 1px solid var(--line-soft); }
+  .list-tabs { display: flex; gap: 4px; padding: 12px 14px 0; }
+  .list-tabs .tab { padding: 8px 10px 10px; }
+  .list-search { margin: 10px 14px 6px; height: 36px; font-size: 13px; }
+  .convs { padding: 4px 8px; overflow: hidden; flex: 1; }
+  .conv { display: grid; grid-template-columns: 40px 1fr auto; gap: 11px; padding: 10px 8px; border-radius: var(--r-md); align-items: center; position: relative; }
+  .conv.on { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line); }
+  .conv.on::before { content: ""; position: absolute; left: -8px; top: 14px; bottom: 14px; width: 3px; border-radius: 0 3px 3px 0; background: var(--saffron); }
+  .conv .gav { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--raised); border: 1px solid var(--line); color: var(--text-2); position: relative; }
+  .conv .gav .g { position: absolute; right: -4px; bottom: -4px; width: 17px; height: 17px; border: 2px solid var(--bg); box-sizing: content-box; }
+  .conv .g svg { width: 66%; height: 66%; }
+  .conv .tt { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; }
+  .conv .ag { font-size: 11.5px; color: var(--muted); font-weight: 500; display: inline-flex; align-items: center; gap: 5px; }
+  .conv .ag .lantern { width: 8px; height: 11px; }
+  .conv .ag .lantern::after { inset: 2px 0 0; border-radius: 3px; }
+  .conv .ag .lantern::before { height: 1.5px; left: 2px; right: 2px; }
+  .conv .sn { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .conv .tm { font-size: 11.5px; color: var(--faint); align-self: start; margin-top: 3px; }
+
+  .t-hd { height: 64px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 22px; border-bottom: 1px solid var(--line-soft); }
+  .t-hd h3 { margin: 0; font-size: 16px; font-weight: 650; }
+  .t-hd .sub { color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+  .t-hd .actions { margin-left: auto; display: flex; gap: 8px; }
+  .msgs { flex: 1; min-height: 0; overflow: hidden; padding: 18px 26px 10px; display: flex; flex-direction: column; justify-content: flex-end; gap: 14px; }
+  .day { align-self: center; font-size: 12px; color: var(--faint); padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line-soft); }
+  .msg { display: grid; grid-template-columns: 34px 1fr; gap: 12px; max-width: 760px; }
+  .msg .who { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .msg .who b { font-weight: 650; }
+  .msg .who .tm { color: var(--faint); font-size: 11.5px; }
+  .tag { font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 5px; letter-spacing: .02em; }
+  .tag.agent { color: var(--saffron); background: var(--saffron-soft); }
+  .tag.human { color: var(--indigo); background: var(--indigo-soft); }
+  .bubble { margin-top: 5px; padding: 10px 14px; border-radius: 4px 14px 14px 14px; background: var(--surface-2); border: 1px solid var(--line-soft); font-size: 14px; line-height: 1.6; color: var(--text); width: fit-content; max-width: 640px; }
+  .bubble.agent { background: color-mix(in srgb, var(--saffron) 7%, var(--surface)); border-color: var(--saffron-line); }
+  .bubble code { font: 12.5px var(--font-mono); background: var(--sunken); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; color: var(--saffron); }
+  .bubble .mention { color: var(--indigo); font-weight: 600; }
+  .receipt { margin-top: 6px; display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px 0 10px; border-radius: 999px; background: var(--sunken); border: 1px dashed var(--line-strong); color: var(--muted); font-size: 12px; }
+  .receipt b { color: var(--text-2); font-weight: 600; }
+  .typing { display: flex; align-items: center; gap: 10px; margin-top: 6px; color: var(--saffron); font-size: 13px; font-weight: 600; }
+  .typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--saffron); display: inline-block; margin-right: 3px; opacity: .4; }
+  .typing i:nth-child(2) { opacity: .7; } .typing i:nth-child(3) { opacity: 1; }
+  .bubble.peer { background: color-mix(in srgb, var(--plum) 7%, var(--surface)); border-color: rgba(199, 146, 255, .3); }
+  .tag.peer { color: var(--plum); background: var(--plum-soft); }
+  .shot { margin-top: 6px; width: 300px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #0d1117; }
+  .shot .bar { height: 26px; display: flex; align-items: center; gap: 5px; padding: 0 10px; background: #161b22; border-bottom: 1px solid #30363d; }
+  .shot .bar i { width: 8px; height: 8px; border-radius: 50%; background: #30363d; display: block; }
+  .shot .row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; font: 11px var(--font-mono); color: #8b949e; border-bottom: 1px solid #21262d; }
+  .shot .row b { color: #e6edf3; font-weight: 500; }
+  .shot .row .s { width: 10px; height: 10px; border-radius: 50%; background: #3fb950; flex: none; }
+  .shot .row .s.k { background: #6e7681; }
+  .shot .cap { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 11.5px; color: var(--muted); background: var(--surface-2); }
+  .readonly { flex: none; margin: 6px 22px 16px; height: 44px; border-radius: var(--r-md); border: 1px dashed var(--line-strong); display: flex; align-items: center; gap: 10px; padding: 0 14px; color: var(--muted); font-size: 12.5px; }
+
+  .info { padding: 18px 18px; display: flex; flex-direction: column; gap: 18px; overflow: hidden; }
+  .info h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .06em; color: var(--faint); font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .member { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 13px; }
+  .member .tag { margin-left: auto; }
+  .info .kv-row { padding: 6px 0; }
+  .danger-link { color: var(--crimson); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: var(--r-sm); background: var(--crimson-soft); }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" data-side="chats"></aside>
+  <main class="main">
+    <header class="top">
+      <h1>会话</h1>
+      <div class="btn sm" style="margin-left:6px"><i data-i="bot" class="xs"></i>全部智能体<i data-i="down" class="xs"></i></div>
+      <div class="actions">
+        <div class="input" style="width:280px;height:36px;font-size:13px"><i data-i="search" class="sm"></i><span class="ph">搜索消息、联系人或群聊</span></div>
+      </div>
+    </header>
+    <section class="content">
+      <div class="panes">
+        <div class="pane">
+          <div class="list-tabs"><span class="tab on">会话 <span class="n">18</span></span><span class="tab">新联系人 <span class="badge" style="min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--saffron);color:var(--saffron-ink);font-size:11px;font-weight:700;display:inline-grid;place-items:center">2</span></span></div>
+          <div class="convs">
+            <div class="conv on">
+              <div class="gav"><i data-i="users" class="sm"></i><span class="g tg"><i data-l="telegram"></i></span></div>
+              <div style="min-width:0"><div class="tt">#bazaar-compute 开发 <span class="ag"><span class="lantern work"></span>有马佳奈</span></div><div class="sn">有马佳奈：#145 已合并，0.3 分支现在是 cd8470d…</div></div>
+              <span class="tm">14:53</span>
+            </div>
+            <div class="conv">
+              <div class="gav"><i data-i="users" class="sm"></i><span class="g tg"><i data-l="telegram"></i></span></div>
+              <div style="min-width:0"><div class="tt">#前端组 <span class="ag"><span class="lantern on"></span>Tifa</span></div><div class="sn">Tifa：已经修好了，单测全部通过</div></div>
+              <span class="tm">14:50</span>
+            </div>
+            <div class="conv">
+              <div class="gav"><i data-i="users" class="sm"></i><span class="g lark"><i data-l="lark"></i></span></div>
+              <div style="min-width:0"><div class="tt">产品周会群 <span class="ag"><span class="lantern work"></span>啊夸</span></div><div class="sn">陈晨：@啊夸 把今天的决定整理一下</div></div>
+              <span class="tm">14:49</span>
+            </div>
+            <div class="conv">
+              <div class="av h3" style="width:40px;height:40px;border-radius:12px">王<span class="g lark" style="position:absolute;right:-4px;bottom:-4px;width:17px;height:17px;border:2px solid var(--bg);box-sizing:content-box"><i data-l="lark"></i></span></div>
+              <div style="min-width:0"><div class="tt">王磊 <span class="ag"><span class="lantern work"></span>Vincent</span></div><div class="sn">王磊：那就按方案二来，周五前上线</div></div>
+              <span class="tm">14:47</span>
+            </div>
+            <div class="conv">
+              <div class="av h4" style="width:40px;height:40px;border-radius:12px">客<span class="g wecom" style="position:absolute;right:-4px;bottom:-4px;width:17px;height:17px;border:2px solid var(--bg);box-sizing:content-box"><i data-l="wecom"></i></span></div>
+              <div style="min-width:0"><div class="tt">售后服务群 <span class="ag"><span class="lantern on"></span>Aerith</span></div><div class="sn">Aerith：已为您登记，预计明天回电</div></div>
+              <span class="tm">13:10</span>
+            </div>
+            <div class="conv">
+              <div class="av h1" style="width:40px;height:40px;border-radius:12px">Y<span class="g tg" style="position:absolute;right:-4px;bottom:-4px;width:17px;height:17px;border:2px solid var(--bg);box-sizing:content-box"><i data-l="telegram"></i></span></div>
+              <div style="min-width:0"><div class="tt">yuchanns <span class="ag"><span class="lantern work"></span>有马佳奈</span></div><div class="sn">有马佳奈：好的，明早 9 点提醒你</div></div>
+              <span class="tm">11:31</span>
+            </div>
+            <div class="conv">
+              <div class="gav"><i data-i="users" class="sm"></i><span class="g tg"><i data-l="telegram"></i></span></div>
+              <div style="min-width:0"><div class="tt">#bcn tg 测试群 <span class="ag"><span class="lantern on"></span>Cid</span></div><div class="sn">Cid：附件收发测试完成，共 4 项</div></div>
+              <span class="tm">昨天</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="t-hd">
+            <div class="gav" style="width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:var(--raised);border:1px solid var(--line);color:var(--text-2)"><i data-i="users" class="sm"></i></div>
+            <div><h3>#bazaar-compute 开发</h3><div class="sub"><span class="g tg"><i data-l="telegram"></i></span>Telegram 群聊 · 4 位成员 · 有马佳奈 负责回复</div></div>
+            <div class="actions"><div class="icon-btn"><i data-i="search" class="sm"></i></div><div class="icon-btn"><i data-i="alarm" class="sm"></i></div></div>
+          </div>
+          <div class="msgs">
+            <span class="day">今天</span>
+            <div class="msg">
+              <div class="av h1">Y</div>
+              <div><div class="who"><b>yuchanns</b><span class="tag human">人类</span><span class="tm">14:40</span></div>
+                <div class="shot"><div class="bar"><i></i><i></i><i></i></div>
+                  <div class="row"><span class="s"></span><b>Plan</b><span style="margin-left:auto">12s</span></div>
+                  <div class="row"><span class="s k"></span><b>Checks</b><span style="margin-left:auto">skipped</span></div>
+                  <div class="row"><span class="s k"></span><b>component / os</b><span style="margin-left:auto">skipped</span></div>
+                  <div class="cap"><span><i data-i="image" class="xs"></i> checks.png</span><span>84 KB</span></div></div>
+                <div class="bubble" style="margin-top:6px">这个 CI 为什么只跑了 Plan？</div></div>
+            </div>
+            <div class="msg">
+              <div class="av h5">啊</div>
+              <div><div class="who"><b>啊夸</b><span class="tag peer">智能体</span><span class="tm">14:44</span></div>
+                <div class="bubble peer"><span class="mention">@有马佳奈</span> 我这边的 3 个 worktree 已经删掉了，共享 checkout 现在没有残留。</div></div>
+            </div>
+            <div class="msg">
+              <div class="av h1">Y</div>
+              <div><div class="who"><b>yuchanns</b><span class="tag human">人类</span><span class="tm">14:52</span></div>
+                <div class="bubble">合并</div></div>
+            </div>
+            <div class="msg">
+              <div class="av h1" style="background:#f5a83a">佳</div>
+              <div><div class="who"><b>有马佳奈</b><span class="tag agent">智能体</span><span class="tm">14:53</span></div>
+                <div class="receipt"><i data-i="terminal" class="xs"></i>运行了 <b>4</b> 条命令 · 打开了 <b>1</b> 个网页 · 共 <b>38</b> 秒<i data-i="right" class="xs"></i></div>
+                <div class="bubble agent" style="margin-top:8px">#145 已合并，0.3 分支现在是合并提交 <code>cd8470d</code>。GitHub 已自动删除远端分支，本地分支我也删了，共享 checkout 已切回 0.3。</div></div>
+            </div>
+            <div class="msg">
+              <div class="av h1">Y</div>
+              <div><div class="who"><b>yuchanns</b><span class="tag human">人类</span><span class="tm">14:58</span></div>
+                <div class="bubble">然后接下来是啥</div></div>
+            </div>
+            <div class="msg">
+              <div class="av h1" style="background:#f5a83a">佳</div>
+              <div><div class="who"><b>有马佳奈</b><span class="tag agent">智能体</span></div>
+                <div class="typing"><span class="lantern work"></span>正在处理 · 读了路线图，在整理第 11 阶段的建议 <span><i></i><i></i><i></i></span></div></div>
+            </div>
+          </div>
+          <div class="readonly"><i data-i="lock" class="sm"></i>这里只读：消息由有马佳奈在 Telegram 中收发，回复请直接在群里进行。</div>
+        </div>
+
+        <div class="pane info">
+          <div>
+            <h4>成员 · 4</h4>
+            <div class="member"><div class="av xs h1">Y</div>yuchanns<span class="tag human">人类</span></div>
+            <div class="member"><div class="av xs h1" style="background:#f5a83a">佳</div>有马佳奈<span class="tag agent">本会话</span></div>
+            <div class="member"><div class="av xs h5">啊</div>啊夸<span class="tag peer">智能体</span></div>
+            <div class="member"><div class="av xs h3">王</div>王磊<span class="tag human">人类</span></div>
+          </div>
+          <div>
+            <h4><i data-i="alarm" class="xs"></i>提醒 · 1</h4>
+            <div class="rem" style="padding:6px 0"><div class="ic"><i data-i="alarm" class="sm"></i></div><div><div class="when">明天 09:00</div><div class="what">跟进 #145 的 review 结论</div></div></div>
+          </div>
+          <div>
+            <h4>会话</h4>
+            <div class="kv-row"><span>审批</span><span class="v" style="color:var(--jade)"><i data-i="okc" class="xs"></i>已允许</span></div>
+            <div class="kv-row"><span>首次联系</span><span class="v">10 月 8 日</span></div>
+            <div class="kv-row"><span>消息</span><span class="v num">23,030 条</span></div>
+          </div>
+          <div style="margin-top:auto"><div class="danger-link"><i data-i="x" class="sm"></i>移除这个群聊</div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

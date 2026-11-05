@@ -3,10 +3,10 @@
 ## 版本目标
 
 BCN 的业务能力、平台 provider、存储查询、控制入口和界面扩展都通过公共模块范式装配。
-所有组合使用同一个宿主和 `bcn run`：`bazaar-contrib-server` 提供服务端组合，`bazaar-contrib-starlink` 提供节点连接，`bazaar-contrib-web` 依赖 server 提供页面。
+所有组合使用同一个宿主和 `bcn run`：`bazaar-contrib-server` 提供 server 本体与页面框架，各功能模块包提供自己的 API 与页面，`bazaar-contrib-starlink` 提供节点连接。
 应用入口、核心框架、公共契约与节点业务 contrib 留在 BCN 仓库，各包分别构建 wheel，以同一版本发行，首版为 `0.3.0`。
-具体 provider、server／web 及服务端迁移等官方可选 contrib 在 open-bazaar 的独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
-`open-bazaar/contrib-server` 中的 `bazaar-contrib-server` 是同一个插件包，持有 `server-migrations` 及按阶段交付的 `server`／`server-api` 入口。
+具体 provider、server 与其功能模块及服务端迁移等官方可选 contrib 在 open-bazaar 的独立仓库维护，声明对 core 与公共接口包的兼容范围，独立构建和发行。
+`open-bazaar/contrib-server-migrations` 中的 `bazaar-contrib-server-migrations` 持有 `server-migrations` 入口，`open-bazaar/contrib-server` 中的 `bazaar-contrib-server` 持有 `server`、`server-theme-night` 与 `server-theme-day` 入口。
 从 `0.3` 开始，Bazaar Compute Node 及本仓库官方发行包使用 Apache License 2.0，各包携带许可证全文与 `Apache-2.0` 发行元数据。
 BCN 源码仓库只维护根目录 `LICENSE`，官方包的 `LICENSE` 使用相对符号链接指向它，包元数据统一声明 `license-files = ["LICENSE"]`。
 独立 contrib 仓库各自携带许可证文件及发行元数据。uv_build 在 wheel 和 sdist 中保存许可证正文，sdist 内为普通文件，独立构建与安装可直接读取。
@@ -37,9 +37,9 @@ Contrib 通过 `offers / accepts` 声明服务，`accepts` 可以依据已校验
 函数显式接收本实例的 Context，声明依赖由框架注入，通过 offer／accept／announce 使用服务与事件；id、name 和快照提供实际实例身份及状态。
 异步上下文管理器负责创建和清理资源，依赖图决定启动、故障传播和退出顺序，子组合随创建实例结束。
 服务接口、数据模型、查询、配置、命令、RPC 和 UI 登记协议由功能包拥有。
-`bazaar-contrib-server` 与 `bazaar-contrib-web` 是独立安装的可选包。server 在同一 Hub 的本地组合读取 ~/.bcs 配置，管理自己的 CONFIG_STORE、STORAGE、DB、API 与业务服务；公共审计可共享。
+`bazaar-contrib-server` 与各功能模块包是独立安装的可选包，与节点的插件同一种机制：server-management 与 bazaar-compute 一起安装后，它的默认配置在顶层启用 server 的条目。只有 server 的数据库由 server-database 以私有绑定装配，以 SERVER_DB 与 SERVER_SCHEMA 提供，数据位于 ~/.bcn；公共审计可共享。
 一个宿主可以同时运行 server 和 agent，各具体实例管理自己的后台任务或子进程；分开部署使用独立配置执行 bcn run，经公开 HTTP 协议通信。
-starlink 默认停用，配置目标 server 后启用；其 getUpdate／send 循环接收请求，通过 accept 调用节点功能服务，按 listen 订阅业务审计并上报。
+starlink 默认停用，配置目标 server 后启用；它经 listen 长轮询接收调用，经私有 sidecar 实例分发到 RemoteEntry 声明的成员，经 announce 回传结果，listen 业务审计后经 report 上报。
 数据投影与访问策略由普通模块消费事件和调用服务，完整已知配置在资源启动前生成并校验依赖图。动态子组合在启用时校验。
 用户选择模块与参数；默认 agent 的实体列表、channel／harness 选择及参数保存在 `contrib="agent"` 条目的 `contribs.config`，由 agent 插件的模型校验并展开实体。模块声明和实例状态分别管理。
 存储组合由公共后端注册表、具体后端及 DB 选择入口构成，默认配置明确选中 SQLite，
@@ -51,7 +51,7 @@ Unix 和 Windows 实现包各自提供两个服务，消费方只依赖接口包
 app 通过平台 marker 声明默认发行依赖与启用条目，配置服务在创建默认文档时选定当前平台实现。
 sidecar 承接 0.2 的 bcn.sock 本机通信，节点默认启用；V4→V5 无条件加入 sidecar 和本机实现，与 node.control 的选择无关。
 功能包同时持有自身的通知与页面文案，默认使用英语。
-web 组合提供 contrib 市场页面，读取随 app 发布的官方本地索引，以及用户追加的本地或 HTTP(S) 索引，按条目的包名和 Python 包源交给目标宿主 uv 安装。
+server 的市场模块提供 contrib 市场页面，按电脑读取随 app 发布的官方本地索引，以及用户追加的本地或 HTTP(S) 索引，按条目的包名和 Python 包源交给目标电脑的 uv 安装。
 包的发行元数据将发行包关联到模块入口，用户选择入口和参数后经该宿主的当前 CONFIG_STORE 保存。
 页面分别展示包安装、配置与实际运行状态，以及索引、包源和安装目标。
 
@@ -96,6 +96,7 @@ Codex、Claude Code、Telegram、Lark、WeCom 是用户选择安装的具体 pro
 | [framework.md](framework.md) | 首个特性分支：框架、默认节点基础、模块与 agent 配置管理、串行 Tasks 和验收 |
 | [roadmap.md](roadmap.md) | 全部能力的模块归属、替换依赖与顺序、阶段验收、0.3 发行清单及发布顺序 |
 | [bazaar.md](bazaar.md) | contrib 市场页面：官方与额外模块索引、包安装到入口配置的流程、管理状态和串行 Tasks |
+| [server.md](server.md) | server 框架、登录与两端通信（第 11、12 阶段）：页面框架与模块登记、登录与权限、server 的条目、数据库与从 ~/.bcs 导入、server-computer 与 listen／announce／report 协议、中转契约、starlink、串行 Tasks |
 | [workspace 发版](../2026-10-21-workspace-release/plan.md) | 可选择分支的统一版本、候选产物验收与批量发布 |
 
 后续特性分支的详细计划继续放入本目录，按能力命名，并从本入口与路线图关联。
@@ -137,6 +138,7 @@ main
 ```
 
 每个能力有自己的详细计划、串行 Tasks、可审提交和特性分支，每个 Task 结束后 review。
+server 阶段的 BCN 改动在 `0.3-server` 上进行，该分支从 `0.3` 的 cd8470d 开始，server 阶段整体验收后合入 `0.3`，见 [server.md](server.md)。
 必要包的特性分支合入 `0.3` 后，下一分支基于新的集成点创建，并验证已完成模块组合。
 可选能力的实现分支在所属仓库 review；BCN 集成分支记录其固定提交、候选产物与兼容范围，更新官方索引并验证跨仓库组合。
 完整版本通过最终验收后，`0.3` 合入 `main`，再发布 BCN `0.3.0`。
@@ -194,10 +196,10 @@ core 的运行接口以普通异步函数调用该加载逻辑，依赖和导入
 bazaar-compute-node (app) → bazaar-core
 bazaar-compute-node (app) → 默认 bazaar-contrib-* → bazaar-core
 可选／第三方 contrib     → bazaar-core + 所需功能契约包
-server／web 组合包       → 所需 contrib 功能包
+server 组合包           → 所需 contrib 功能包
 ```
 
-core 的发行依赖与导入保持通用；app 直接声明默认官方包及资源，server／web 各自声明可选组合。
+core 的发行依赖与导入保持通用；app 直接声明默认官方包及资源，server 声明自己的可选组合。
 包依赖负责安装代码，运行依赖负责装配服务，两者按各自边界校验。
 
 ### 本地 workspace 开发
@@ -315,7 +317,7 @@ BCN 仓库的 app、core、公共接口及必要 contrib 使用同一个版本�
 必要包即使源码未改，也随 BCN 发行升版；依赖下限独立维护，仅在使用更新接口时提高。
 升级 app 时，用户保存的兼容版本要求继续参与解析，可以保留选定的旧依赖；workspace 的共享锁固定开发和验收使用的实际版本。
 可选官方包与第三方包由各自仓库独立维护版本、标签和产物，声明 core 的兼容范围，例如 `bazaar-core>=0.3.0,<0.4.0`，以及所需公共接口包的兼容范围。
-server／web 等独立组合声明自身所需包范围；整体集成验收保存每个包的实际版本、来源、仓库和源码提交。
+server 等独立组合声明自身所需包范围；整体集成验收保存每个包的实际版本、来源、仓库和源码提交。
 
 app 的共同发行清单只标识 BCN 必要包；官方安装索引从 BCN workspace 自动生成 contrib 工作区包的 package/source 条目，随 wheel／sdist 发布。
 管理服务将目标 app 和保存的全部额外包要求交给 uv 一次解析；可选包版本依其兼容范围与用户要求选择，显式固定和来源继续参与冲突检查。
@@ -325,8 +327,8 @@ Contrib 声明的公共 API 范围供加载边界复核。
 固定发行名、目录、入口与默认／可选归属见 [路线图的拆包清单](roadmap.md#发行包模块入口与内置组合)。
 app、core、公共接口和节点业务包留在 BCN 共同发行；默认组合使用的 SQLite、时间轮、文件配置、原生 sidecar 传输与日志实现按下文的迁仓任务在 open-bazaar 独立维护。channel 与 harness 两个公共接口包各附带共享 builder 注册入口。
 config 载体和五版服务先于完整业务文档装配；storage 提供 storage 与 database 两个运行入口。
-server／web 保持可选安装；BCS 组合直接读取自己的 ~/.bcs/config.toml、bcs.sqlite3 与 session.key，
-保留原配置结构、账户、权限、历史数据、已发布迁移及旧节点协议。
+server 保持可选安装；server 的数据位于 ~/.bcn，首次启动从 ~/.bcs 导入数据库、session.key 与设置，
+保留原数据结构、账户、权限、历史数据与已发布迁移；节点协议不兼容 0.2。
 完整升级规则见 [BCS 连续升级](framework.md#02-bcs-配置与数据源连续升级)。
 
 ### 发版工具与 CI

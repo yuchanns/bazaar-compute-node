@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="utf-8">
+<title>Bazaar · 设置 · 登录方式</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,500..700,0..100;1,9..144,500..700,0..100&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=block" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="flat.css">
+<script src="logos.js"></script>
+<script src="ui.js"></script>
+<script src="awning.js"></script>
+<style>
+  .settings { display: grid; grid-template-columns: 216px 1fr; gap: 28px; height: 100%; min-height: 0; }
+  .snav { display: flex; flex-direction: column; gap: 2px; }
+  .snav .it { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--r-sm); color: var(--text-2); font-weight: 500; font-size: 13.5px; }
+  .snav .it.on { background: var(--surface); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); font-weight: 600; }
+  .snav .it.on svg { color: var(--saffron); }
+  .snav .gp { font-size: 11px; letter-spacing: .08em; color: var(--faint); font-weight: 700; padding: 14px 12px 6px; }
+  .pane { min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+  .pane > * { flex-shrink: 0; }
+  .pane-hd { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 4px; }
+  .pane-hd h2 { margin: 0; font-family: var(--font-display); font-size: 24px; font-weight: 650; }
+  .pane-hd p { margin: 6px 0 0; color: var(--muted); font-size: 13.5px; }
+  .pane-hd .btn { margin-left: auto; }
+  .method { padding: 0; overflow: hidden; }
+  .m-hd { display: grid; grid-template-columns: 40px 1fr auto auto auto; gap: 14px; align-items: center; padding: 14px 18px; }
+  .m-hd .lg { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; font-weight: 800; color: #fff; }
+  .m-hd b { font-size: 14.5px; display: flex; align-items: center; gap: 8px; }
+  .m-hd .pkg { font: 12px var(--font-mono); color: var(--muted); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+  .m-hd .pkg .tag { font-family: var(--font-ui); }
+  .tag { font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 5px; }
+  .tag.pref { color: var(--saffron); background: var(--saffron-soft); }
+  .tag.impl { color: var(--indigo); background: var(--indigo-soft); }
+  .tag.core { color: var(--muted); background: var(--sunken); border: 1px solid var(--line); }
+  .order { display: flex; gap: 4px; }
+  .order span { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; border: 1px solid var(--line); color: var(--muted); }
+  .switch { width: 40px; height: 24px; border-radius: 999px; background: var(--jade); position: relative; box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); }
+  .switch::after { content: ""; position: absolute; right: 3px; top: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.35); }
+  .m-bd { border-top: 1px solid var(--line-soft); padding: 16px 18px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px 16px; background: var(--surface-2); }
+  .m-bd .two { grid-column: span 2; }
+  .m-bd > .hint { color: var(--muted); font-size: 12.5px; }
+  .m-bd .wide { grid-column: 1 / -1; }
+  .m-bd .input { height: 38px; font-size: 13.5px; }
+  .m-ft { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--line-soft); background: var(--surface-2); }
+  .m-ft .right { margin-left: auto; display: flex; gap: 8px; }
+  .note { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: var(--r-md); border: 1px dashed var(--line-strong); color: var(--text-2); font-size: 13px; }
+  .note b { color: var(--text); }
+  .note .btn { margin-left: auto; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" data-side="settings"></aside>
+  <main class="main">
+    <header class="top"><h1>设置</h1></header>
+    <section class="content">
+      <div class="settings">
+        <nav class="snav">
+          <div class="gp">个人</div>
+          <div class="it"><i data-i="sun" class="sm"></i>外观</div>
+          <div class="it"><i data-i="lock" class="sm"></i>安全</div>
+          <div class="gp">管理</div>
+          <div class="it"><i data-i="users" class="sm"></i>账户</div>
+          <div class="it"><i data-i="shield" class="sm"></i>角色</div>
+          <div class="it on"><i data-i="key" class="sm"></i>登录方式</div>
+        </nav>
+
+        <div class="pane">
+          <div class="pane-hd">
+            <div><h2>登录方式</h2><p>每种登录方式都是一个实现 OIDC 接口的 contrib。安装新的实现后，它会出现在「添加登录方式」里。</p></div>
+            <div class="btn primary"><i data-i="plus" class="sm"></i>添加登录方式</div>
+          </div>
+
+          <div class="card method">
+            <div class="m-hd">
+              <div class="lg" style="background:var(--sunken);color:var(--text-2);border:1px solid var(--line)"><i data-i="lock" class="sm"></i></div>
+              <div><b>账号密码</b><div class="pkg"><span class="tag core">内置</span>本地账户始终可以登录</div></div>
+              <span></span><span></span><span class="muted" style="font-size:12.5px">始终启用</span>
+            </div>
+          </div>
+
+          <div class="card method" style="border-color:var(--saffron-line)">
+            <div class="m-hd">
+              <span class="g lark" style="--s:40px"><i data-l="lark"></i></span>
+              <div><b>飞书 <span class="tag pref">登录页首选</span></b><div class="pkg"><span class="tag impl">OIDC 实现</span>bazaar-contrib-oidc-lark 0.3.0</div></div>
+              <div class="order"><span><i data-i="up" class="xs"></i></span><span><i data-i="down" class="xs"></i></span></div>
+              <span class="muted" style="font-size:12.5px">已启用</span>
+              <div class="switch"></div>
+            </div>
+            <div class="m-bd">
+              <div class="field"><label>显示名称</label><div class="input">飞书</div></div>
+              <div class="field"><label>App ID</label><div class="input"><span class="mono">cli_a7f3e29c81b4d00e</span></div></div>
+              <div class="field"><label>图标</label><div class="input"><span class="g lark" style="width:22px;height:22px;border-radius:6px"><i data-l="lark"></i></span><span>lark.png</span><span class="suffix">更换</span></div></div>
+              <div class="field"><label>App Secret</label><div class="input"><span class="ph">已设置 · 留空保持不变</span><span class="suffix"><i data-i="key" class="xs"></i></span></div></div>
+              <div class="field two"><label>回调地址</label><div class="input"><span class="mono" style="font-size:12.5px">https://bazaar.example.com/oidc/lark/callback</span><span class="suffix"><i data-i="copy" class="xs"></i>复制</span></div></div>
+              <span class="hint wide" style="margin-top:-6px">在飞书开放平台的「安全设置 › 重定向 URL」里登记上面的回调地址。</span>
+            </div>
+            <div class="m-ft"><span class="muted" style="font-size:12.5px"><i data-i="okc" class="xs" style="color:var(--jade);vertical-align:-2px"></i> 最近 7 天有 14 次登录</span><div class="right"><div class="btn sm ghost" style="color:var(--crimson)">删除</div><div class="btn sm primary">保存</div></div></div>
+          </div>
+
+          <div class="card method">
+            <div class="m-hd">
+              <div class="lg" style="background:#24292f"><svg viewBox="0 0 16 16" width="18" height="18" fill="#fff"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></div>
+              <div><b>GitHub</b><div class="pkg"><span class="tag impl">OIDC 实现</span>bazaar-contrib-oidc-github 0.3.0 · Client ID Iv23li8aQ…</div></div>
+              <div class="order"><span><i data-i="up" class="xs"></i></span><span><i data-i="down" class="xs"></i></span></div>
+              <span class="muted" style="font-size:12.5px">已启用</span>
+              <div class="switch"></div>
+            </div>
+          </div>
+
+          <div class="card method">
+            <div class="m-hd">
+              <div class="lg" style="background:var(--indigo-soft);color:var(--indigo)"><i data-i="key" class="sm"></i></div>
+              <div><b>公司 SSO</b><div class="pkg"><span class="tag impl">OIDC 实现</span>bazaar-contrib-oidc 0.3.0 · 标准 OIDC · sso.example.com</div></div>
+              <div class="order"><span><i data-i="up" class="xs"></i></span><span><i data-i="down" class="xs"></i></span></div>
+              <span class="muted" style="font-size:12.5px">已启用</span>
+              <div class="switch"></div>
+            </div>
+          </div>
+
+          <div class="note"><i data-i="users" class="sm muted"></i><span>通过这些方式首次登录的人会自动建立账户，默认角色为 <b>成员</b>。</span><div class="btn sm">修改默认角色</div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

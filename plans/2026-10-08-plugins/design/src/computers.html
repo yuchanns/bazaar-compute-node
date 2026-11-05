@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="utf-8">
+<title>Bazaar · 电脑</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,500..700,0..100;1,9..144,500..700,0..100&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=block" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="flat.css">
+<script src="logos.js"></script>
+<script src="ui.js"></script>
+<script src="awning.js"></script>
+<style>
+  .main { position: relative; }
+  .tbl { overflow: hidden; }
+  .tr { display: grid; grid-template-columns: 2.1fr 1fr 1.6fr 1fr 1fr 1fr 40px; gap: 14px; align-items: center; padding: 14px 20px; }
+  .tr + .tr { border-top: 1px solid var(--line-soft); }
+  .tr.h { padding-top: 12px; padding-bottom: 12px; font-size: 12px; color: var(--faint); font-weight: 600; letter-spacing: .04em; background: var(--surface-2); }
+  .pc { display: flex; align-items: center; gap: 12px; }
+  .pc .os { width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center; background: var(--sunken); border: 1px solid var(--line); color: var(--text-2); position: relative; overflow: hidden; }
+  .pc .os::before { content: ""; position: absolute; inset: 0 0 auto; height: 6px; background: repeating-linear-gradient(90deg, var(--stripe) 0 6px, transparent 6px 12px); }
+  .pc .os svg { width: 16px; height: 16px; fill: currentColor; stroke: none; margin-top: 4px; }
+  .pc b { display: block; font-size: 14px; }
+  .pc span { font-size: 12px; color: var(--muted); }
+  .lrow { display: flex; align-items: center; gap: 5px; }
+  .lrow .n { margin-left: 6px; font-size: 12.5px; color: var(--muted); }
+  .cell { font-size: 13px; color: var(--text-2); }
+  .cell.mono { font-size: 12.5px; }
+  .backdrop { position: absolute; inset: 68px 0 0 0; background: rgba(5, 7, 10, .62); backdrop-filter: blur(2px); }
+  :root[data-theme="day"] .backdrop { background: rgba(60, 45, 20, .25); }
+  .drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 500px; background: var(--surface); border-left: 1px solid var(--line); box-shadow: -30px 0 60px -20px rgba(0,0,0,.6); display: flex; flex-direction: column; }
+  .drawer .d-hd { height: 68px; display: flex; align-items: center; gap: 12px; padding: 0 24px; border-bottom: 1px solid var(--line-soft); }
+  .drawer .d-hd h3 { margin: 0; font-family: var(--font-display); font-size: 20px; font-weight: 650; }
+  .drawer .d-hd .icon-btn { margin-left: auto; }
+  .drawer .d-bd { padding: 22px 24px; display: flex; flex-direction: column; gap: 22px; flex: 1; min-height: 0; }
+  .dstep { display: grid; grid-template-columns: 28px 1fr; gap: 14px; }
+  .dstep .n { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12.5px; font-weight: 700; background: var(--jade); color: #04241c; }
+  .dstep.now .n { background: var(--saffron); color: var(--saffron-ink); box-shadow: 0 0 0 5px var(--saffron-soft); }
+  .dstep.wait .n { background: var(--surface-2); color: var(--muted); border: 1.5px dashed var(--line-strong); }
+  .dstep h4 { margin: 3px 0 10px; font-size: 14.5px; font-weight: 650; }
+  .warn { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 12.5px; color: var(--saffron); }
+  .waiting { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: var(--r-md); border: 1px dashed var(--line-strong); background: var(--sunken); }
+  .waiting .ring { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; background: var(--saffron-soft); box-shadow: 0 0 0 6px rgba(245,179,66,.06), 0 0 0 12px rgba(245,179,66,.03); }
+  .waiting b { display: block; font-size: 13.5px; }
+  .waiting span { font-size: 12.5px; color: var(--muted); }
+  .d-ft { padding: 16px 24px; border-top: 1px solid var(--line-soft); display: flex; align-items: center; gap: 10px; }
+  .d-ft .muted { font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" data-side="computers"></aside>
+  <main class="main">
+    <header class="top">
+      <h1>电脑</h1>
+      <span class="muted" style="font-size:13px">4 台 · 3 台在线</span>
+      <div class="actions"><div class="btn primary"><i data-i="plus" class="sm"></i>接入电脑</div></div>
+    </header>
+    <section class="content">
+      <div class="card tbl">
+        <div class="tr h"><span>电脑</span><span>状态</span><span>智能体</span><span>版本</span><span>待同步事件</span><span>最后在线</span><span></span></div>
+        <div class="tr">
+          <div class="pc" style="--stripe:#f5b342"><div class="os"><i data-l="linux"></i></div><div><b>kana-vm</b><span>Fedora 44 · x86_64</span></div></div>
+          <span class="online">在线</span>
+          <div class="lrow"><span class="lantern work"></span><span class="lantern on"></span><span class="lantern fail"></span><span class="n">3 位 · 1 位异常</span></div>
+          <span class="cell mono">bcn 0.3.0</span><span class="cell mono">0</span><span class="cell">刚刚</span><span class="muted"><i data-i="more" class="sm"></i></span>
+        </div>
+        <div class="tr">
+          <div class="pc" style="--stripe:#34c3a0"><div class="os"><i data-l="apple"></i></div><div><b>aqua-mbp</b><span>macOS 26 · arm64</span></div></div>
+          <span class="online">在线</span>
+          <div class="lrow"><span class="lantern work"></span><span class="lantern on"></span><span class="n">2 位</span></div>
+          <span class="cell mono">bcn 0.3.0</span><span class="cell mono">0</span><span class="cell">刚刚</span><span class="muted"><i data-i="more" class="sm"></i></span>
+        </div>
+        <div class="tr">
+          <div class="pc" style="--stripe:#8f9dff"><div class="os"><i data-i="windows"></i></div><div><b>win-desk</b><span>Windows 11 · x86_64</span></div></div>
+          <span class="online">在线</span>
+          <div class="lrow"><span class="lantern work"></span><span class="lantern on"></span><span class="n">2 位</span></div>
+          <span class="cell mono">bcn 0.3.0</span><span class="cell mono" style="color:var(--saffron)">12</span><span class="cell">刚刚</span><span class="muted"><i data-i="more" class="sm"></i></span>
+        </div>
+        <div class="tr" style="opacity:.75">
+          <div class="pc" style="--stripe:#7d8595"><div class="os"><i data-l="linux"></i></div><div><b>ci-runner-01</b><span>Ubuntu 24.04 · x86_64</span></div></div>
+          <span class="online off">离线</span>
+          <div class="lrow"><span class="lantern off"></span><span class="lantern off"></span><span class="n">2 位</span></div>
+          <span class="cell mono">bcn 0.3.0</span><span class="cell mono">—</span><span class="cell">2 小时前</span><span class="muted"><i data-i="more" class="sm"></i></span>
+        </div>
+      </div>
+    </section>
+
+    <div class="backdrop"></div>
+    <aside class="drawer">
+      <div class="d-hd"><h3>接入新电脑</h3><div class="icon-btn"><i data-i="x" class="sm"></i></div></div>
+      <div class="d-bd">
+        <div class="dstep">
+          <span class="n"><i data-i="check" class="xs"></i></span>
+          <div><h4>给它起个名字</h4><div class="input"><span>kana-laptop</span><span class="suffix"><i data-i="okc" class="xs" style="color:var(--jade)"></i>可用</span></div></div>
+        </div>
+        <div class="dstep now">
+          <span class="n">2</span>
+          <div>
+            <h4>在 kana-laptop 上运行</h4>
+            <div class="seg" style="margin-bottom:10px"><span class="on">Linux / macOS</span><span>Windows</span></div>
+            <div class="code"><span class="p">$ </span>uv tool install <span class="s">"bazaar-compute[node]"</span>
+<span class="p">$ </span>bcn contrib add starlink <span class="f">--enable</span>
+<span class="p">$ </span>bcn starlink connect <span class="s">https://bazaar.example.com</span> \
+    <span class="f">--token</span> bzr_7f3c9a4e••••••••e21d<span class="copy btn sm"><i data-i="copy" class="xs"></i>复制</span></div>
+            <div class="warn"><i data-i="key" class="xs"></i>令牌只显示这一次，关闭后无法再次查看。</div>
+          </div>
+        </div>
+        <div class="dstep wait">
+          <span class="n">3</span>
+          <div>
+            <h4>等它上线</h4>
+            <div class="waiting"><div class="ring"><span class="lantern work lg"></span></div><div><b>正在等待 kana-laptop 连接…</b><span>连上之后会自动打开它的摊位，可以直接新建智能体。</span></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="d-ft"><i data-i="terminal" class="xs muted"></i><span class="muted">首次使用？之后运行 <span class="mono">bcn system-service install</span> 让它开机自启。</span><div class="btn" style="margin-left:auto">关闭</div></div>
+    </aside>
+  </main>
+</div>
+</body>
+</html>

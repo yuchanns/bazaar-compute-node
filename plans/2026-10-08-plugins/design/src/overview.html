@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="utf-8">
+<title>Bazaar · 总览</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,500..700,0..100;1,9..144,500..700,0..100&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&display=block" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="flat.css">
+<script src="logos.js"></script>
+<script src="ui.js"></script>
+<script src="awning.js"></script>
+<style>
+  .board { display: grid; grid-template-columns: 1fr 364px; gap: 20px; margin-top: 18px; flex: 1; min-height: 0; }
+  .board > .left { display: flex; flex-direction: column; min-height: 0; }
+  .stalls { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 16px; flex: 1; min-height: 0; }
+  .rightcol { display: flex; flex-direction: column; gap: 16px; min-height: 0; }
+  .rightcol .feedcard { flex: 1; min-height: 0; overflow: hidden; }
+  .count-pill { min-width: 22px; height: 22px; padding: 0 7px; border-radius: 999px; background: var(--saffron); color: var(--saffron-ink); font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" data-side="overview"></aside>
+  <main class="main">
+    <header class="top">
+      <h1>总览</h1>
+      <span class="live">实时</span>
+      <div class="actions">
+        <div class="icon-btn"><i data-i="bell"></i><span class="dot"></span></div>
+        <div class="btn primary"><i data-i="plus" class="sm"></i>新建智能体</div>
+      </div>
+    </header>
+    <section class="content">
+      <div class="greet">
+        <div>
+          <h2>晚上好，<em>yuchanns</em></h2>
+          <p><b>3 位智能体</b>正在工作，<b>2 个新会话</b>等待审批，<b>1 台电脑</b>离线。</p>
+        </div>
+        <div class="seg"><span class="on">今天</span><span>近 7 天</span><span>近 30 天</span></div>
+      </div>
+
+      <div class="kpis">
+        <div class="card kpi">
+          <div class="lbl"><i data-i="bot" class="sm"></i>运行中的智能体</div>
+          <div class="val num">6<small>/ 9</small></div>
+          <div class="row-lanterns">
+            <span class="lantern work"></span><span class="lantern on"></span><span class="lantern fail"></span>
+            <span class="lantern work"></span><span class="lantern on"></span><span class="lantern on"></span>
+            <span class="lantern work"></span><span class="lantern off"></span><span class="lantern off"></span>
+          </div>
+        </div>
+        <div class="card kpi hot">
+          <div class="lbl"><i data-i="zap" class="sm"></i>正在工作</div>
+          <div class="val num">3<small>位</small></div>
+          <div class="foot">有马佳奈 · 啊夸 · Vincent</div>
+        </div>
+        <div class="card kpi">
+          <div class="lbl"><i data-i="activity" class="sm"></i>今日处理轮次</div>
+          <div class="val num">128</div>
+          <div class="foot"><span class="up">↑ 14%</span> 较昨日 <svg class="spark calm" width="110" height="22" data-v="2,3,1,0,0,1,4,9,12,10,14,11,9,13,16,12,10,8,6,9"></svg></div>
+        </div>
+        <div class="card kpi">
+          <div class="lbl"><i data-i="coins" class="sm"></i>今日用量</div>
+          <div class="val num">1.24<small>M tokens · $4.37</small></div>
+          <div class="bar"><i style="width:52%;background:var(--saffron)"></i><i style="width:33%;background:var(--jade)"></i><i style="width:15%;background:var(--indigo)"></i></div>
+          <div class="legend"><span style="--c:var(--saffron)">输入 52%</span><span style="--c:var(--jade)">缓存命中 33%</span><span style="--c:var(--indigo)">输出 15%</span></div>
+        </div>
+      </div>
+
+      <div class="board">
+        <div class="left">
+          <div class="section-title"><h2>摊位</h2><span class="sub">4 台电脑 · 9 位智能体</span><span class="more">全部电脑<i data-i="right" class="xs"></i></span></div>
+          <div class="stalls">
+            <div class="card stall" style="--stripe:#f5b342;--stripe-2:#3d2c0e">
+              <div class="awning"></div>
+              <div class="stall-hd">
+                <div class="os"><i data-l="linux"></i></div>
+                <div><div class="name">kana-vm</div><div class="meta">Fedora 44 · bcn 0.3.0</div></div>
+                <div class="right"><span class="online">在线</span></div>
+              </div>
+              <div class="vendors">
+                <div class="vendor focus">
+                  <span class="lantern work"></span>
+                  <div><div class="nm">有马佳奈 <span class="g tg"><i data-l="telegram"></i></span><span class="rtn"><span class="g claudecode"><i data-l="claudecode"></i></span>Claude Code</span></div>
+                  <div class="doing"><b>正在处理</b> #bazaar-compute 开发 · 3 分 12 秒</div></div>
+                  <svg class="spark" width="84" height="26" data-v="1,2,1,3,5,4,6,8,7,9,12,10,14"></svg>
+                </div>
+                <div class="vendor">
+                  <span class="lantern on"></span>
+                  <div><div class="nm">Tifa <span class="g tg"><i data-l="telegram"></i></span><span class="rtn"><span class="g codex"><i data-l="codex"></i></span>Codex</span></div>
+                  <div class="doing">空闲 · 2 分钟前在 #前端组 回复了王磊</div></div>
+                  <svg class="spark calm" width="84" height="26" data-v="3,4,2,5,6,4,3,5,6,4,3,2,2"></svg>
+                </div>
+                <div class="vendor">
+                  <span class="lantern fail"></span>
+                  <div><div class="nm">Barret <span class="g wecom"><i data-l="wecom"></i></span><span class="rtn"><span class="g codex"><i data-l="codex"></i></span>Codex</span></div>
+                  <div class="doing err">启动失败 · codex 尚未登录</div></div>
+                  <svg class="spark dead" width="84" height="26" data-v="2,2,2,2,2,2,2,2,2,2,2,2,2"></svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="card stall" style="--stripe:#34c3a0;--stripe-2:#0e3a31">
+              <div class="awning"></div>
+              <div class="stall-hd">
+                <div class="os"><i data-l="apple"></i></div>
+                <div><div class="name">aqua-mbp</div><div class="meta">macOS 26 · bcn 0.3.0</div></div>
+                <div class="right"><span class="online">在线</span></div>
+              </div>
+              <div class="vendors">
+                <div class="vendor focus">
+                  <span class="lantern work"></span>
+                  <div><div class="nm">啊夸 <span class="g lark"><i data-l="lark"></i></span><span class="rtn"><span class="g codex"><i data-l="codex"></i></span>Codex</span></div>
+                  <div class="doing"><b>正在处理</b> 产品周会群 · 48 秒</div></div>
+                  <svg class="spark" width="84" height="26" data-v="4,6,5,3,4,7,6,9,8,6,9,11,10"></svg>
+                </div>
+                <div class="vendor">
+                  <span class="lantern on"></span>
+                  <div><div class="nm">Aerith <span class="g wecom"><i data-l="wecom"></i></span><span class="rtn"><span class="g claudecode"><i data-l="claudecode"></i></span>Claude Code</span></div>
+                  <div class="doing">空闲 · 1 小时前</div></div>
+                  <svg class="spark calm" width="84" height="26" data-v="1,2,4,3,2,1,2,3,2,1,1,0,0"></svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="card stall" style="--stripe:#8f9dff;--stripe-2:#242a54">
+              <div class="awning"></div>
+              <div class="stall-hd">
+                <div class="os"><i data-i="windows"></i></div>
+                <div><div class="name">win-desk</div><div class="meta">Windows 11 · bcn 0.3.0</div></div>
+                <div class="right"><span class="online">在线</span></div>
+              </div>
+              <div class="vendors">
+                <div class="vendor focus">
+                  <span class="lantern work"></span>
+                  <div><div class="nm">Vincent <span class="g lark"><i data-l="lark"></i></span><span class="rtn"><span class="g claudecode"><i data-l="claudecode"></i></span>Claude Code</span></div>
+                  <div class="doing"><b>正在处理</b> 与王磊的私聊 · 6 分钟</div></div>
+                  <svg class="spark" width="84" height="26" data-v="0,1,1,2,4,3,5,4,6,8,9,7,11"></svg>
+                </div>
+                <div class="vendor">
+                  <span class="lantern on"></span>
+                  <div><div class="nm">Cid <span class="g tg"><i data-l="telegram"></i></span><span class="rtn"><span class="g codex"><i data-l="codex"></i></span>Codex</span></div>
+                  <div class="doing">空闲 · 今天 09:40</div></div>
+                  <svg class="spark calm" width="84" height="26" data-v="2,1,3,2,1,2,1,1,2,1,0,1,0"></svg>
+                </div>
+              </div>
+            </div>
+
+            <div class="card stall off" style="--stripe:#f2555a;--stripe-2:#4a1c1e">
+              <div class="awning"></div>
+              <div class="stall-hd">
+                <div class="os"><i data-l="linux"></i></div>
+                <div><div class="name">ci-runner-01</div><div class="meta">Ubuntu 24.04 · bcn 0.3.0</div></div>
+                <div class="right"><span class="online off">离线 2 小时</span></div>
+              </div>
+              <div class="vendors">
+                <div class="vendor">
+                  <span class="lantern off"></span>
+                  <div><div class="nm">Yuffie <span class="g tg"><i data-l="telegram"></i></span><span class="rtn"><span class="g codex"><i data-l="codex"></i></span>Codex</span></div>
+                  <div class="doing">电脑离线，消息会在重新连接后处理</div></div>
+                  <svg class="spark dead" width="84" height="26" data-v="2,2,2,2,2,2,2,2,2,2,2,2,2"></svg>
+                </div>
+                <div class="vendor">
+                  <span class="lantern off"></span>
+                  <div><div class="nm">Red XIII <span class="g lark"><i data-l="lark"></i></span><span class="rtn"><span class="g codex"><i data-l="codex"></i></span>Codex</span></div>
+                  <div class="doing">电脑离线</div></div>
+                  <svg class="spark dead" width="84" height="26" data-v="2,2,2,2,2,2,2,2,2,2,2,2,2"></svg>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rightcol">
+          <div class="card">
+            <div class="card-hd"><h3>需要你处理</h3><span class="count-pill">3</span><span class="more">全部<i data-i="right" class="xs"></i></span></div>
+            <div class="attn">
+              <div class="attn-item">
+                <div class="ic req"><i data-i="userplus" class="sm"></i></div>
+                <div class="tx"><b>李雷</b> 想私聊 <b>Tifa</b> <span class="g tg" style="vertical-align:-3px"><i data-l="telegram"></i></span>
+                  <div class="q">“你好，我是新来的同事，想请你帮我搭一下开发环境…”</div>
+                  <div class="acts"><span class="btn sm ok"><i data-i="check" class="xs"></i>允许 <kbd class="k">A</kbd></span><span class="btn sm no"><i data-i="x" class="xs"></i>拒绝 <kbd class="k">D</kbd></span></div>
+                </div>
+              </div>
+              <div class="attn-item">
+                <div class="ic req"><i data-i="users" class="sm"></i></div>
+                <div class="tx"><b>设计组</b> 想让 <b>啊夸</b> 加入群聊 <span class="g lark" style="vertical-align:-3px"><i data-l="lark"></i></span>
+                  <div class="q">12 位成员 · 首条消息 5 分钟前</div>
+                  <div class="acts"><span class="btn sm ok"><i data-i="check" class="xs"></i>允许</span><span class="btn sm no"><i data-i="x" class="xs"></i>拒绝</span></div>
+                </div>
+              </div>
+              <div class="attn-item">
+                <div class="ic err"><i data-i="alert" class="sm"></i></div>
+                <div class="tx"><b>Barret</b> 在 kana-vm 上启动失败
+                  <div class="q mono">codex: not logged in · 运行 codex login 后重试</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="card feedcard">
+            <div class="card-hd"><h3>集市动态</h3><span class="more">活动记录<i data-i="right" class="xs"></i></span></div>
+            <div class="feed">
+              <div class="feed-item"><span class="dot s"><i data-i="zap"></i></span><span class="tx"><b>有马佳奈</b> 开始处理 #bazaar-compute 开发</span><span class="t">刚刚</span></div>
+              <div class="feed-item"><span class="dot j"><i data-i="send"></i></span><span class="tx"><b>Tifa</b> 在 #前端组 回复了王磊</span><span class="t">2 分钟</span></div>
+              <div class="feed-item"><span class="dot b"><i data-i="userplus"></i></span><span class="tx"><b>李雷</b> 请求私聊 Tifa</span><span class="t">4 分钟</span></div>
+              <div class="feed-item"><span class="dot s"><i data-i="terminal"></i></span><span class="tx"><b>Vincent</b> 运行了 6 条命令</span><span class="t">6 分钟</span></div>
+              <div class="feed-item"><span class="dot"><i data-i="alarm"></i></span><span class="tx"><b>啊夸</b> 的提醒到期：整理周会纪要</span><span class="t">18 分钟</span></div>
+              <div class="feed-item"><span class="dot r"><i data-i="wifioff"></i></span><span class="tx"><b>ci-runner-01</b> 断开连接</span><span class="t">2 小时</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

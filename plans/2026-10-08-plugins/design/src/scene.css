@@ -1,0 +1,73 @@
+/* The street's palette. A theme sets the --scene-* values; the lanterns,
+   awnings and goods take the theme's own hues. Shades and lights are mixed
+   from those, flat, never graded. */
+
+:root[data-theme="night"] {
+  --scene-sky: #0d1226; --scene-star: #ffffff; --scene-moon: #f3ead8; --scene-bite: #0d1226;
+  --scene-far: #090d1c; --scene-far-roof: #0b1022; --scene-window: rgba(245, 179, 66, .5);
+  --scene-cord: #3a3550; --scene-cap: #6b6380;
+  --scene-wood: #2d2535; --scene-wood-light: #3b3045; --scene-wood-shade: #1d1824;
+  --scene-inside: #211b2c; --scene-inside-shade: #17131f;
+  --scene-alt: #d9cbb0; --scene-glow: #fff3d6; --scene-bulb: #ffd88a;
+  --scene-ground: #0a0d1a; --scene-ground-light: #141a2c; --scene-ground-shade: rgba(0, 0, 0, .4);
+  --scene-pot: #44465a; --scene-steam: rgba(255, 255, 255, .28);
+  --scene-far-fade: .72;
+}
+:root[data-theme="day"] {
+  --scene-sky: #f3e3c3; --scene-star: transparent; --scene-moon: #f6c35c; --scene-bite: transparent;
+  --scene-far: #e3cda6; --scene-far-roof: #d8bf94; --scene-window: rgba(120, 90, 40, .22);
+  --scene-cord: #b6a383; --scene-cap: #9f8d6f;
+  --scene-wood: #b98b5b; --scene-wood-light: #cfa06d; --scene-wood-shade: #9b6f45;
+  --scene-inside: #e8d4b0; --scene-inside-shade: #d4bc94;
+  --scene-alt: #fff6e3; --scene-glow: #ffffff; --scene-bulb: #f3e2b8;
+  --scene-ground: #e2cca4; --scene-ground-light: #ecdbbb; --scene-ground-shade: rgba(92, 64, 22, .16);
+  --scene-pot: #8a8172; --scene-steam: rgba(255, 255, 255, .7);
+  --scene-far-fade: .8;
+}
+
+.s-sky { fill: var(--scene-sky); }
+.s-edge { fill: var(--surface); }
+.s-star { fill: var(--scene-star); }
+.s-moon { fill: var(--scene-moon); }
+.s-bite { fill: var(--scene-bite); }
+.s-far { fill: var(--scene-far); }
+.s-far2 { fill: var(--scene-far-roof); }
+.s-window { fill: var(--scene-window); }
+.s-cord { stroke: var(--scene-cord); stroke-width: 1.4; fill: none; }
+.s-cap { fill: var(--scene-cap); }
+.s-rib { stroke: rgba(0, 0, 0, .2); stroke-width: 1; fill: none; }
+.s-wood { fill: var(--scene-wood); }
+.s-wood-light { fill: var(--scene-wood-light); }
+.s-wood-shade { fill: var(--scene-wood-shade); }
+.s-inside { fill: var(--scene-inside); }
+.s-inside-shade { fill: var(--scene-inside-shade); }
+.s-inside-lit { fill: color-mix(in srgb, var(--saffron) 50%, var(--scene-inside)); }
+.s-alt { fill: var(--scene-alt); }
+.s-alt-shade { fill: color-mix(in srgb, var(--scene-alt) 78%, #000); }
+.s-bulb { fill: var(--scene-bulb); }
+.s-ground { fill: var(--scene-ground); }
+.s-ground-light { fill: var(--scene-ground-light); }
+.s-ground-shade { fill: var(--scene-ground-shade); }
+.s-pot { fill: var(--scene-pot); }
+.s-pot-shade { fill: color-mix(in srgb, var(--scene-pot) 70%, #000); }
+.s-steam { stroke: var(--scene-steam); stroke-width: 4; stroke-linecap: round; }
+.f-paper, .f-cap, .f-cord, .f-rib { opacity: var(--scene-far-fade); }
+
+.s-saffron { fill: var(--saffron); } .s-jade { fill: var(--jade); } .s-crimson { fill: var(--crimson); }
+.s-indigo { fill: var(--indigo); } .s-plum { fill: var(--plum); }
+.s-saffron-shade { fill: color-mix(in srgb, var(--saffron) 70%, #000); }
+.s-jade-shade { fill: color-mix(in srgb, var(--jade) 70%, #000); }
+.s-crimson-shade { fill: color-mix(in srgb, var(--crimson) 70%, #000); }
+.s-indigo-shade { fill: color-mix(in srgb, var(--indigo) 70%, #000); }
+.s-plum-shade { fill: color-mix(in srgb, var(--plum) 70%, #000); }
+.s-saffron-glow { fill: color-mix(in srgb, var(--saffron) 45%, var(--scene-glow)); }
+.s-jade-glow { fill: color-mix(in srgb, var(--jade) 45%, var(--scene-glow)); }
+.s-crimson-glow { fill: color-mix(in srgb, var(--crimson) 45%, var(--scene-glow)); }
+.s-indigo-glow { fill: color-mix(in srgb, var(--indigo) 45%, var(--scene-glow)); }
+.s-plum-glow { fill: color-mix(in srgb, var(--plum) 45%, var(--scene-glow)); }
+.s-saffron-dim { fill: color-mix(in srgb, var(--saffron) 60%, var(--scene-inside)); }
+.s-jade-dim { fill: color-mix(in srgb, var(--jade) 60%, var(--scene-inside)); }
+.s-crimson-dim { fill: color-mix(in srgb, var(--crimson) 60%, var(--scene-inside)); }
+.s-indigo-dim { fill: color-mix(in srgb, var(--indigo) 60%, var(--scene-inside)); }
+.s-plum-dim { fill: color-mix(in srgb, var(--plum) 60%, var(--scene-inside)); }
+.s-alt-dim { fill: var(--scene-alt); }

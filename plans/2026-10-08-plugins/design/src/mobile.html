@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="night">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bazaar · 手机</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,500..700,0..100;1,9..144,400..700,0..100&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700;900&display=block" rel="stylesheet">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="flat.css">
+<link rel="stylesheet" href="scene.css">
+<script src="logos.js"></script>
+<script src="ui.js"></script>
+<script src="awning.js"></script>
+<script src="tents.js"></script>
+<style>
+  /* one phone screen per ?screen=; 390×844, the home indicator's safe area at the bottom */
+  body { overflow: hidden; }
+  .phone { width: 390px; height: 844px; display: none; flex-direction: column; overflow: hidden; position: relative; }
+  :root[data-screen="login"] .s-login, :root[data-screen="login-third"] .s-login,
+  :root[data-screen="overview"] .s-overview, :root[data-screen="settings"] .s-settings,
+  :root[data-screen="appearance"] .s-appearance { display: flex; }
+  .for-third { display: none !important; }
+  :root[data-screen="login-third"] .for-third { display: revert !important; }
+  :root[data-screen="login-third"] .for-password { display: none !important; }
+
+  /* top bar and bottom tabs, one per page */
+  .bar { height: 56px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); }
+  .bar h1 { margin: 0; font-family: var(--font-display); font-weight: 650; font-size: 20px; letter-spacing: -.01em; }
+  .bar .mark { width: 26px; height: 26px; }
+  .bar .back { width: 36px; height: 36px; margin-left: -10px; display: grid; place-items: center; color: var(--text-2); }
+  .bar .icon-btn { margin-left: auto; }
+  .main { flex: 1; min-height: 0; overflow: hidden; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+  .tabs { flex: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 6px 8px 26px; background: var(--side-bg); border-top: 1px solid var(--line-soft); }
+  .tabs span { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0 6px; border-radius: 10px; color: var(--muted); font-size: 11px; font-weight: 600; }
+  .tabs span svg.i { width: 20px; height: 20px; }
+  .tabs span.on { color: var(--saffron); background: var(--saffron-soft); }
+
+  /* login: the street as a band above the form */
+  .band { position: relative; flex: 1; min-height: 270px; overflow: hidden; background: #0d1226; }
+  .band svg.sky { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .band .copy { position: absolute; left: 22px; right: 22px; bottom: 96px; }
+  .band .eyebrow { font: 700 11px var(--font-ui); letter-spacing: .3em; color: var(--saffron); }
+  .band h2 { margin: 10px 0 0; font-family: "Noto Serif SC", serif; font-weight: 900; font-size: 22px; line-height: 1.3; color: #f3ead8; letter-spacing: .02em; }
+  .band h2 span { color: var(--saffron); }
+  .band .street { position: absolute; left: -6px; right: -6px; bottom: 0; height: 64px; display: flex; align-items: flex-end; gap: 10px; padding: 0 14px; }
+  .booth { flex: 1; position: relative; height: var(--h); background: #161829; border-radius: 4px 4px 0 0; }
+  .booth .aw { position: absolute; left: -5px; right: -5px; top: -15px; height: 18px; border-radius: 3px 3px 0 0; background: repeating-linear-gradient(90deg, var(--a) 0 11px, var(--b) 11px 22px); }
+  .booth .aw::after { content: ""; position: absolute; left: 0; right: 0; bottom: -5px; height: 6px; background: radial-gradient(circle at 5.5px 0, var(--a) 5px, transparent 5.5px) 0 0 / 22px 6px repeat-x, radial-gradient(circle at 16.5px 0, var(--b) 5px, transparent 5.5px) 0 0 / 22px 6px repeat-x; }
+  .booth .win { position: absolute; left: 16%; right: 16%; top: 14px; height: 40%; border-radius: 4px; background: #2a2433; display: flex; align-items: center; justify-content: center; gap: 5px; }
+  .booth .win i { width: 6px; height: 9px; border-radius: 3px; background: #f5b342; }
+  .booth .win i.j { background: #34c3a0; }
+  .signin-area { flex: none; padding: 26px 22px 10px; background: var(--surface); }
+  .band svg.sky .edge { fill: var(--surface); }
+  .signin-area .brand { padding: 0; margin-bottom: 18px; }
+  .signin-area h3 { margin: 0 0 4px; font-family: var(--font-display); font-size: 26px; font-weight: 650; letter-spacing: -.01em; }
+  .signin-area .sub { color: var(--muted); font-size: 13.5px; margin-bottom: 20px; }
+  .stack { display: grid; gap: 14px; }
+  .fld { display: grid; gap: 7px; }
+  .fld label { font-size: 13px; font-weight: 500; color: var(--text-2); }
+  .fld input { height: 46px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line-soft); background: var(--sunken); font: 16px var(--font-ui); color: var(--text); outline: 0; }
+  .fld input.is-focus { border-color: var(--saffron-line); box-shadow: 0 0 0 3px var(--saffron-soft); }
+  input[type="password"] { letter-spacing: .14em; }
+  .go { width: 100%; height: 46px; margin-top: 4px; border: 0; border-radius: 10px; display: flex; align-items: center; justify-content: center; font: 600 15px var(--font-ui);
+        background: var(--saffron); color: var(--saffron-ink); box-shadow: inset 0 1px 0 rgba(255,255,255,.22), inset 0 -1px 0 rgba(0,0,0,.14); }
+  .method { position: relative; overflow: hidden; padding: 26px 20px 22px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line); }
+  .corner { position: absolute; top: 0; right: 0; width: 58px; height: 58px; padding: 0; border: 0; background: none; color: var(--muted); clip-path: polygon(0 0, 100% 0, 100% 100%); }
+  .corner .under { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .corner .layer { fill: var(--sunken); }
+  .corner .shade { fill: rgba(0, 0, 0, .38); }
+  :root[data-theme="day"] .corner .layer { fill: #ece3d3; }
+  :root[data-theme="day"] .corner .shade { fill: rgba(92, 64, 22, .16); }
+  .corner svg.i { position: absolute; top: 9px; right: 9px; width: 19px; height: 19px; }
+  .third { display: flex; flex-direction: column; align-items: center; text-align: center; }
+  .third .tile { width: 64px; height: 64px; border-radius: 17px; display: grid; place-items: center; color: #fff; }
+  .third .tile svg { width: 42px; height: 42px; }
+  .third b { margin-top: 14px; font-size: 16px; font-weight: 650; }
+  .third p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; }
+  .third .or { align-self: stretch; display: flex; align-items: center; gap: 12px; margin: 22px 0 14px; color: var(--faint); font-size: 12px; }
+  .third .or::before, .third .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+  .third .logos { display: flex; gap: 20px; }
+  .third .logos .tile { width: 44px; height: 44px; border-radius: 12px; }
+  .third .logos .tile svg { width: 26px; height: 26px; }
+  .third .logos .tile svg.i { width: 22px; height: 22px; }
+
+  /* overview */
+  .greet h2 { font-size: 22px; }
+  .greet p { font-size: 13px; }
+  .kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .kpi { padding: 12px 13px; }
+  .kpi .val { font-size: 24px; }
+  .kpi .foot { font-size: 12px; }
+  .section-title { margin: 4px 0 0; }
+  .section-title h2 { font-size: 17px; }
+  .stalls { display: grid; gap: 12px; }
+  .vendor { grid-template-columns: 26px 1fr; }
+  .vendor .spark { display: none; }
+  .vendor .doing { max-width: 280px; }
+
+  /* settings */
+  .who { display: flex; align-items: center; gap: 12px; padding: 14px; }
+  .who b { display: block; font-size: 15px; }
+  .who span { font-size: 12.5px; color: var(--muted); }
+  .rows { padding: 4px 0; }
+  .rowl { display: flex; align-items: center; gap: 14px; padding: 13px 16px; }
+  .rowl + .rowl { border-top: 1px solid var(--line-soft); }
+  .rowl > svg.i:first-child { color: var(--text-2); }
+  .rowl b { display: block; font-size: 14.5px; font-weight: 600; }
+  .rowl span { font-size: 12.5px; color: var(--muted); }
+  .rowl > svg.i:last-child { margin-left: auto; color: var(--faint); }
+  .leave { height: 48px; justify-content: center; font-size: 14.5px; }
+  .card.form { padding: 18px 16px; display: grid; gap: 18px; }
+  .select { height: 46px; border-radius: 10px; border: 1px solid var(--line-soft); background: var(--sunken); display: flex; align-items: center; padding: 0 12px 0 14px; font-size: 16px; color: var(--text); }
+  .select svg.i { margin-left: auto; color: var(--muted); }
+  .seg.wide { display: flex; }
+  .seg.wide span { flex: 1; text-align: center; padding: 8px 0; }
+  .picks { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .pick { display: grid; gap: 8px; justify-items: center; font-size: 13px; color: var(--text-2); }
+  .pick .palette { position: relative; width: 100%; height: 70px; display: flex; border-radius: 10px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
+  .pick .palette i { flex: 1; } .pick .palette i:first-child { flex: 3; } .pick .palette i:nth-child(2) { flex: 2; }
+  .pick.on .palette { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--saffron); }
+  .pick.on span { color: var(--text); font-weight: 600; }
+  .pick .tick { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--saffron); color: var(--saffron-ink); }
+
+  .band { background: var(--scene-sky); }
+  .band svg.street-top { position: absolute; left: 0; top: 0; width: 100%; height: auto; }
+  .band svg.street-bottom { position: absolute; left: 0; bottom: 0; width: 100%; height: auto; }
+  .band .copy { z-index: 1; bottom: 178px; top: auto; transform: none; }
+  .band h2 { font-size: 20px; }
+  /* the morning market */
+  :root[data-theme="day"] .band { background: #f3e3c3; }
+  :root[data-theme="day"] .band .stars { display: none; }
+  :root[data-theme="day"] .band .cord { stroke: #b6a383; }
+  :root[data-theme="day"] .band .cap { fill: #9f8d6f; }
+  :root[data-theme="day"] .band .eyebrow { color: #b87708; }
+  :root[data-theme="day"] .band h2 { color: #2a2218; }
+  :root[data-theme="day"] .band h2 span { color: #c97f0f; }
+  :root[data-theme="day"] .booth { --b: #fff4dd !important; background: #e6d3b0; }
+  :root[data-theme="day"] .booth .win { background: #d6bf98; }
+</style>
+<script>
+  const q = new URLSearchParams(location.search);
+  document.documentElement.dataset.screen = q.get('screen') || 'login';
+  // the form's lower edge is a downward arc; the lantern string hangs on its own below it; flat
+  function sky(svg) {
+    const w = 390, colours = ['#f5b342', '#34c3a0', '#f5b342', '#f2555a', '#f5b342', '#34c3a0'];
+    const top = 56, sag = 98;
+    const at = t => [(1 - t) ** 2 * -8 + 2 * (1 - t) * t * (w / 2) + t * t * (w + 8), (1 - t) ** 2 * (top + 4) + 2 * (1 - t) * t * (top + sag) + t * t * top];
+    let out = '<g class="stars">' + [[30, 200], [120, 178], [210, 214], [300, 186], [360, 226], [80, 252], [250, 258], [340, 272]]
+      .map(([x, y], i) => `<circle cx="${x}" cy="${y}" r="${i % 3 ? .9 : 1.2}" fill="#fff" opacity="${.3 + (i % 3) * .15}"/>`).join('') + '</g>';
+    out += `<path class="edge" d="M0 0 H${w} V6 Q ${w / 2} 58 0 6 Z"/>`;
+    out += `<path class="cord" d="M-8 ${top + 4} Q ${w / 2} ${top + sag} ${w + 8} ${top}" fill="none" stroke="#3a3550" stroke-width="1.6"/>`;
+    colours.forEach((c, i) => {
+      const [x, y] = at((i + .5) / colours.length), r = i % 2 ? 9 : 12, drop = 8 + (i * 5) % 10;
+      out += `<g transform="translate(${x.toFixed(1)} ${(y + drop).toFixed(1)})"><line y1="${-drop}" y2="0" class="cord" stroke="#3a3550" stroke-width="1.2"/>
+        <rect x="${-r * .7}" y="0" width="${r * 1.4}" height="3.5" rx="1.5" class="cap" fill="#6b6380"/>
+        <ellipse cx="0" cy="${r * 1.25 + 2}" rx="${r}" ry="${r * 1.15}" fill="${c}"/>
+        <rect x="${-r * .55}" y="${r * 2.4 + 2}" width="${r * 1.1}" height="3" rx="1.3" class="cap" fill="#6b6380"/></g>`;
+    });
+    svg.innerHTML = out;
+  }
+</script>
+</head>
+<body>
+
+<!-- login: Task 46 has the account and password only; ?screen=login-third shows the third-party side -->
+<div class="phone s-login">
+  <div class="signin-area">
+    <div class="brand"><span data-tents></span><span class="word">Bazaar</span></div>
+    <h3>登录</h3>
+    <div class="sub">欢迎回来。选择一种方式进入集市。</div>
+    <form class="stack for-password" onsubmit="return false">
+      <div class="fld"><label for="n1">账号</label><input id="n1" value="admin" autocomplete="off" spellcheck="false"></div>
+      <div class="fld"><label for="p1">密码</label><input id="p1" type="password" value="lanterns" class="is-focus"></div>
+      <button class="go" type="button">登录</button>
+    </form>
+    <div class="method for-third">
+      <button class="corner" type="button" aria-label="账号密码登录"><svg class="under" viewBox="0 0 58 58" aria-hidden="true"><polygon points="0,0 58,0 58,58" class="layer"/><polygon points="0,0 4.5,0 58,53.5 58,58" class="shade"/></svg><i data-i="monitor"></i></button>
+      <div class="third">
+        <span class="tile" style="background:var(--lark)"><i data-l="lark"></i></span>
+        <b>飞书</b>
+        <p>用飞书账号登录</p>
+        <div class="or">其他方式</div>
+        <div class="logos">
+          <span class="tile" style="background:#24292f"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></span>
+          <span class="tile" style="background:var(--indigo)"><i data-i="key"></i></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="band">
+    <svg class="street-top" viewBox="0 0 390 150" preserveAspectRatio="xMidYMax slice" aria-hidden="true"><rect class="s-sky" x="0" y="0" width="390" height="150"/><path class="s-edge" d="M0 0 H390 V6 Q195 58 0 6 Z"/><path class="s-cord" d="M-20 62 L-9.2 64 L1.5 66 L12.2 67.8 L23 69.5 L33.8 71.1 L44.5 72.6 L55.2 74 L66 75.3 L76.8 76.4 L87.5 77.5 L98.3 78.4 L109 79.3 L119.8 80 L130.5 80.6 L141.2 81.1 L152 81.5 L162.8 81.8 L173.5 82 L184.2 82 L195 82 L205.8 81.8 L216.5 81.6 L227.2 81.2 L238 80.7 L248.8 80.1 L259.5 79.4 L270.2 78.6 L281 77.7 L291.8 76.6 L302.5 75.5 L313.2 74.2 L324 72.9 L334.8 71.4 L345.5 69.8 L356.2 68.1 L367 66.3 L377.8 64.4 L388.5 62.4 L399.2 60.2 L410 58" fill="none"/><path class="s-cord cord" d="M15.8 68.4 V74.4"/><rect class="s-cap cap" x="9.5" y="74.4" width="12.6" height="2.3" rx="0.8"/><path class="s-saffron paper" d="M9.7 76.7 C2.4 78.2 2.4 100 9.7 101.5 L21.9 101.5 C29.3 100 29.3 78.2 21.9 76.7 Z"/><path class="s-saffron-shade paper" d="M19.2 76.7 Q23.4 89.1 19.2 101.5 L21.9 101.5 C29.3 100 29.3 78.2 21.9 76.7 Z"/><path class="s-saffron-glow paper" d="M12.8 80.2 Q8.9 89.1 12.8 98 Q16.7 89.1 12.8 80.2 Z"/><path class="s-rib rib" d="M12.1 76.7 Q8.3 89.1 12.1 101.5"/><path class="s-rib rib" d="M14.5 76.7 Q13.2 89.1 14.5 101.5"/><path class="s-rib rib" d="M17.2 76.7 Q18.5 89.1 17.2 101.5"/><path class="s-rib rib" d="M19.6 76.7 Q23.4 89.1 19.6 101.5"/><rect class="s-cap cap" x="10.4" y="101.5" width="10.9" height="2.1" rx="0.8"/><path class="s-cord cord" d="M15.8 103.6 V106.9"/><circle class="s-saffron-shade paper" cx="15.8" cy="107.8" r="1.5"/><path class="s-saffron paper" d="M14.6 109 L17.1 109 L18.6 117.8 L13.1 117.8 Z"/><path class="s-rib rib" d="M14.5 111 L13.9 117.8"/><path class="s-rib rib" d="M15.8 111 L15.8 117.8"/><path class="s-rib rib" d="M17.2 111 L17.7 117.8"/><path class="s-cord cord" d="M87.5 77.5 V91.5"/><rect class="s-cap cap" x="82.4" y="91.5" width="10.2" height="1.9" rx="0.7"/><path class="s-jade paper" d="M82.6 93.4 C76.6 94.6 76.6 112.2 82.6 113.4 L92.4 113.4 C98.4 112.2 98.4 94.6 92.4 93.4 Z"/><path class="s-jade-shade paper" d="M90.2 93.4 Q93.6 103.4 90.2 113.4 L92.4 113.4 C98.4 112.2 98.4 94.6 92.4 93.4 Z"/><path class="s-jade-glow paper" d="M85 96.2 Q81.9 103.4 85 110.6 Q88.2 103.4 85 96.2 Z"/><path class="s-rib rib" d="M84.4 93.4 Q81.4 103.4 84.4 113.4"/><path class="s-rib rib" d="M86.4 93.4 Q85.3 103.4 86.4 113.4"/><path class="s-rib rib" d="M88.6 93.4 Q89.7 103.4 88.6 113.4"/><path class="s-rib rib" d="M90.6 93.4 Q93.6 103.4 90.6 113.4"/><rect class="s-cap cap" x="83.1" y="113.4" width="8.8" height="1.7" rx="0.7"/><path class="s-cord cord" d="M87.5 115.1 V117.8"/><circle class="s-jade-shade paper" cx="87.5" cy="118.5" r="1.2"/><path class="s-jade paper" d="M86.5 119.5 L88.5 119.5 L89.7 126.7 L85.3 126.7 Z"/><path class="s-rib rib" d="M86.4 121.5 L86 126.7"/><path class="s-rib rib" d="M87.5 121.5 L87.5 126.7"/><path class="s-rib rib" d="M88.6 121.5 L89 126.7"/><path class="s-cord cord" d="M159.2 81.7 V103.7"/><rect class="s-cap cap" x="152.9" y="103.7" width="12.6" height="2.3" rx="0.8"/><path class="s-crimson paper" d="M153.1 106 C145.7 107.5 145.7 129.3 153.1 130.8 L165.3 130.8 C172.6 129.3 172.6 107.5 165.3 106 Z"/><path class="s-crimson-shade paper" d="M162.5 106 Q166.7 118.4 162.5 130.8 L165.3 130.8 C172.6 129.3 172.6 107.5 165.3 106 Z"/><path class="s-crimson-glow paper" d="M156.1 109.5 Q152.2 118.4 156.1 127.3 Q160 118.4 156.1 109.5 Z"/><path class="s-rib rib" d="M155.4 106 Q151.6 118.4 155.4 130.8"/><path class="s-rib rib" d="M157.8 106 Q156.5 118.4 157.8 130.8"/><path class="s-rib rib" d="M160.5 106 Q161.8 118.4 160.5 130.8"/><path class="s-rib rib" d="M162.9 106 Q166.7 118.4 162.9 130.8"/><rect class="s-cap cap" x="153.7" y="130.8" width="10.9" height="2.1" rx="0.8"/><path class="s-cord cord" d="M159.2 132.9 V136.3"/><circle class="s-crimson-shade paper" cx="159.2" cy="137.1" r="1.5"/><path class="s-crimson paper" d="M157.9 138.4 L160.4 138.4 L161.9 147.2 L156.4 147.2 Z"/><path class="s-rib rib" d="M157.8 140.4 L157.3 147.2"/><path class="s-rib rib" d="M159.2 140.4 L159.2 147.2"/><path class="s-rib rib" d="M160.5 140.4 L161.1 147.2"/><path class="s-cord cord" d="M230.8 81.1 V91.1"/><rect class="s-cap cap" x="225.7" y="91.1" width="10.2" height="1.9" rx="0.7"/><path class="s-indigo paper" d="M225.9 92.9 C220 94.1 220 111.8 225.9 113 L235.8 113 C241.7 111.8 241.7 94.1 235.8 92.9 Z"/><path class="s-indigo-shade paper" d="M233.5 92.9 Q237 103 233.5 113 L235.8 113 C241.7 111.8 241.7 94.1 235.8 92.9 Z"/><path class="s-indigo-glow paper" d="M228.4 95.7 Q225.2 103 228.4 110.2 Q231.5 103 228.4 95.7 Z"/><path class="s-rib rib" d="M227.8 92.9 Q224.7 103 227.8 113"/><path class="s-rib rib" d="M229.7 92.9 Q228.7 103 229.7 113"/><path class="s-rib rib" d="M231.9 92.9 Q233 103 231.9 113"/><path class="s-rib rib" d="M233.9 92.9 Q236.9 103 233.9 113"/><rect class="s-cap cap" x="226.4" y="113" width="8.8" height="1.7" rx="0.7"/><path class="s-cord cord" d="M230.8 114.7 V117.4"/><circle class="s-indigo-shade paper" cx="230.8" cy="118.1" r="1.2"/><path class="s-indigo paper" d="M229.8 119.1 L231.8 119.1 L233 126.2 L228.6 126.2 Z"/><path class="s-rib rib" d="M229.7 121.1 L229.3 126.2"/><path class="s-rib rib" d="M230.8 121.1 L230.8 126.2"/><path class="s-rib rib" d="M231.9 121.1 L232.4 126.2"/><path class="s-cord cord" d="M302.5 75.5 V93.5"/><rect class="s-cap cap" x="296.2" y="93.5" width="12.6" height="2.3" rx="0.8"/><path class="s-plum paper" d="M296.4 95.8 C289.1 97.3 289.1 119.1 296.4 120.6 L308.6 120.6 C315.9 119.1 315.9 97.3 308.6 95.8 Z"/><path class="s-plum-shade paper" d="M305.8 95.8 Q310.1 108.2 305.8 120.6 L308.6 120.6 C315.9 119.1 315.9 97.3 308.6 95.8 Z"/><path class="s-plum-glow paper" d="M299.5 99.3 Q295.6 108.2 299.5 117.1 Q303.3 108.2 299.5 99.3 Z"/><path class="s-rib rib" d="M298.7 95.8 Q294.9 108.2 298.7 120.6"/><path class="s-rib rib" d="M301.2 95.8 Q299.8 108.2 301.2 120.6"/><path class="s-rib rib" d="M303.8 95.8 Q305.2 108.2 303.8 120.6"/><path class="s-rib rib" d="M306.3 95.8 Q310.1 108.2 306.3 120.6"/><rect class="s-cap cap" x="297" y="120.6" width="10.9" height="2.1" rx="0.8"/><path class="s-cord cord" d="M302.5 122.7 V126"/><circle class="s-plum-shade paper" cx="302.5" cy="126.9" r="1.5"/><path class="s-plum paper" d="M301.3 128.1 L303.7 128.1 L305.2 136.9 L299.8 136.9 Z"/><path class="s-rib rib" d="M301.1 130.1 L300.6 136.9"/><path class="s-rib rib" d="M302.5 130.1 L302.5 136.9"/><path class="s-rib rib" d="M303.9 130.1 L304.4 136.9"/><path class="s-cord cord" d="M374.2 65.1 V71.1"/><rect class="s-cap cap" x="369.1" y="71.1" width="10.2" height="1.9" rx="0.7"/><path class="s-saffron paper" d="M369.2 72.9 C363.3 74.1 363.3 91.8 369.2 93 L379.1 93 C385 91.8 385 74.1 379.1 72.9 Z"/><path class="s-saffron-shade paper" d="M376.9 72.9 Q380.3 83 376.9 93 L379.1 93 C385 91.8 385 74.1 379.1 72.9 Z"/><path class="s-saffron-glow paper" d="M371.7 75.7 Q368.6 83 371.7 90.2 Q374.8 83 371.7 75.7 Z"/><path class="s-rib rib" d="M371.1 72.9 Q368.1 83 371.1 93"/><path class="s-rib rib" d="M373.1 72.9 Q372 83 373.1 93"/><path class="s-rib rib" d="M375.3 72.9 Q376.3 83 375.3 93"/><path class="s-rib rib" d="M377.2 72.9 Q380.3 83 377.2 93"/><rect class="s-cap cap" x="369.7" y="93" width="8.8" height="1.7" rx="0.7"/><path class="s-cord cord" d="M374.2 94.7 V97.4"/><circle class="s-saffron-shade paper" cx="374.2" cy="98.1" r="1.2"/><path class="s-saffron paper" d="M373.2 99.1 L375.2 99.1 L376.4 106.2 L372 106.2 Z"/><path class="s-rib rib" d="M373.1 101.1 L372.6 106.2"/><path class="s-rib rib" d="M374.2 101.1 L374.2 106.2"/><path class="s-rib rib" d="M375.3 101.1 L375.7 106.2"/></svg>
+    <div class="copy">
+      <div class="eyebrow">BAZAAR COMPUTE</div>
+      <h2>不必独自建造——<br>带上你的<span>智能体</span>，来集市。</h2>
+    </div>
+    <svg class="street-bottom" viewBox="0 0 390 220" preserveAspectRatio="xMidYMax slice" aria-hidden="true"><rect class="s-sky" x="0" y="0" width="390" height="220"/><circle class="s-star" cx="180.6" cy="26.1" r="0.8" opacity="0.5"/><circle class="s-star" cx="338" cy="0.5" r="1.2" opacity="0.35"/><circle class="s-star" cx="130.3" cy="65.5" r="0.7" opacity="0.9"/><circle class="s-star" cx="66.1" cy="66.2" r="1.2" opacity="0.5"/><circle class="s-star" cx="65.7" cy="3.6" r="0.8" opacity="0.35"/><circle class="s-star" cx="301.9" cy="26.9" r="0.7" opacity="0.7"/><circle class="s-star" cx="79.9" cy="15.7" r="1.2" opacity="0.35"/><circle class="s-star" cx="301.3" cy="63.8" r="1.2" opacity="0.7"/><circle class="s-star" cx="133.2" cy="3" r="0.7" opacity="0.9"/><circle class="s-star" cx="21.4" cy="26.5" r="1.2" opacity="0.5"/><path class="s-star" d="M47.3 24.9 Q47.3 29.7 52.1 29.7 Q47.3 29.7 47.3 34.5 Q47.3 29.7 42.5 29.7 Q47.3 29.7 47.3 24.9Z"/><rect class="s-far" x="-14" y="162.5" width="64.7" height="37.5"/><path class="s-far2" d="M-26 155.2 Q-16 162.5 -6 162.5 L42.7 162.5 Q52.7 162.5 62.7 155.2 L46.7 151.7 L-10 151.7 Z"/><rect class="s-far" x="67.3" y="182.3" width="70.2" height="17.7"/><path class="s-far2" d="M55.3 175.2 Q65.3 182.3 75.3 182.3 L129.4 182.3 Q139.4 182.3 149.4 175.2 L133.4 171.8 L71.3 171.8 Z"/><rect class="s-far" x="141.7" y="170.7" width="63.1" height="29.3"/><path class="s-far2" d="M129.7 164 Q139.7 170.7 149.7 170.7 L196.8 170.7 Q206.8 170.7 216.8 164 L200.8 155.2 L145.7 155.2 Z"/><rect class="s-far" x="214.3" y="182.4" width="96.3" height="17.6"/><path class="s-far2" d="M202.3 176.7 Q212.3 182.4 222.3 182.4 L302.7 182.4 Q312.7 182.4 322.7 176.7 L306.7 168.9 L218.3 168.9 Z"/><rect class="s-far" x="323.2" y="183.6" width="115.5" height="16.4"/><path class="s-far2" d="M311.2 176.2 Q321.2 183.6 331.2 183.6 L430.7 183.6 Q440.7 183.6 450.7 176.2 L434.7 170.3 L327.2 170.3 Z"/><rect class="s-ground" x="0" y="206" width="390" height="14"/><rect class="s-ground-light" x="0" y="212" width="22.3" height="3" rx="1.5"/><rect class="s-ground-light" x="62.2" y="212.6" width="19.9" height="3" rx="1.5"/><rect class="s-ground-light" x="121" y="212.8" width="21.8" height="3" rx="1.5"/><rect class="s-ground-light" x="159.8" y="212.7" width="23.9" height="3" rx="1.5"/><rect class="s-ground-light" x="213.9" y="213.8" width="30.4" height="3" rx="1.5"/><rect class="s-ground-light" x="268.6" y="212.8" width="31.8" height="3" rx="1.5"/><rect class="s-ground-light" x="327.2" y="212" width="24.4" height="3" rx="1.5"/><rect class="s-ground-light" x="381.5" y="212.4" width="18.3" height="3" rx="1.5"/><ellipse class="s-ground-shade" cx="66" cy="206" rx="62.6" ry="7"/><rect class="s-inside" x="20" y="111.6" width="92" height="54.3"/><rect class="s-inside-shade" x="24" y="136.6" width="84" height="3"/><rect class="s-inside-shade" x="24" y="158.3" width="84" height="3"/><rect class="s-indigo-dim" x="32" y="123.6" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="34" y="120.6" width="6" height="3" rx="1"/><rect class="s-jade-dim" x="48" y="120.6" width="10" height="16" rx="3"/><rect class="s-inside-shade" x="50" y="117.6" width="6" height="3" rx="1"/><rect class="s-plum-dim" x="64" y="123.6" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="66" y="120.6" width="6" height="3" rx="1"/><rect class="s-indigo-dim" x="80" y="123.6" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="82" y="120.6" width="6" height="3" rx="1"/><rect class="s-wood-light" x="34" y="143.3" width="26" height="15" rx="2"/><rect class="s-wood-shade" x="34" y="143.3" width="26" height="3" rx="1"/><rect class="s-wood-light" x="72" y="143.3" width="20" height="15" rx="2"/><rect class="s-wood-shade" x="72" y="143.3" width="20" height="3" rx="1"/><path class="s-cord cord" d="M66 113.6 V117.6"/><rect class="s-cap cap" x="62.1" y="117.6" width="7.8" height="1.4" rx="0.5"/><path class="s-indigo paper" d="M62.2 119 C57.7 120 57.7 133.4 62.2 134.4 L69.8 134.4 C74.3 133.4 74.3 120 69.8 119 Z"/><path class="s-indigo-shade paper" d="M68.1 119 Q70.7 126.7 68.1 134.4 L69.8 134.4 C74.3 133.4 74.3 120 69.8 119 Z"/><path class="s-indigo-glow paper" d="M64.1 121.2 Q61.7 126.7 64.1 132.2 Q66.5 126.7 64.1 121.2 Z"/><path class="s-rib rib" d="M63.7 119 Q61.3 126.7 63.7 134.4"/><path class="s-rib rib" d="M65.2 119 Q64.3 126.7 65.2 134.4"/><path class="s-rib rib" d="M66.8 119 Q67.7 126.7 66.8 134.4"/><path class="s-rib rib" d="M68.3 119 Q70.7 126.7 68.3 134.4"/><rect class="s-cap cap" x="62.6" y="134.4" width="6.8" height="1.3" rx="0.5"/><path class="s-cord cord" d="M66 135.7 V137.7"/><circle class="s-indigo-shade paper" cx="66" cy="138.3" r="0.9"/><path class="s-indigo paper" d="M65.2 139 L66.8 139 L67.7 144.5 L64.3 144.5 Z"/><path class="s-rib rib" d="M65.2 141 L64.8 144.5"/><path class="s-rib rib" d="M66 141 L66 144.5"/><path class="s-rib rib" d="M66.8 141 L67.2 144.5"/><rect class="s-wood" x="16" y="92" width="8" height="114"/><rect class="s-wood-shade" x="21" y="92" width="3" height="114"/><rect class="s-wood" x="108" y="92" width="8" height="114"/><rect class="s-wood-shade" x="113" y="92" width="3" height="114"/><path class="s-indigo" d="M10 88 L26 88 L18.9 111.6 L0 111.6 Z"/><path class="s-alt" d="M26 88 L42 88 L37.7 111.6 L18.9 111.6 Z"/><path class="s-indigo" d="M42 88 L58 88 L56.6 111.6 L37.7 111.6 Z"/><path class="s-alt" d="M58 88 L74 88 L75.4 111.6 L56.6 111.6 Z"/><path class="s-indigo" d="M74 88 L90 88 L94.3 111.6 L75.4 111.6 Z"/><path class="s-alt" d="M90 88 L106 88 L113.1 111.6 L94.3 111.6 Z"/><path class="s-indigo" d="M106 88 L122 88 L132 111.6 L113.1 111.6 Z"/><path class="s-indigo-shade" d="M0 106.6 L132 106.6 L132 111.6 L0 111.6 Z" opacity=".55"/><path class="s-indigo" d="M0 111.6 A9.4 8.5 0 0 0 18.9 111.6 Z"/><path class="s-indigo-shade" d="M3.4 116.8 A6.6 3.3 0 0 0 15.5 116.8 A9.4 8.5 0 0 1 3.4 116.8 Z"/><path class="s-alt" d="M18.9 111.6 A9.4 8.5 0 0 0 37.7 111.6 Z"/><path class="s-alt-shade" d="M22.3 116.8 A6.6 3.3 0 0 0 34.3 116.8 A9.4 8.5 0 0 1 22.3 116.8 Z"/><path class="s-indigo" d="M37.7 111.6 A9.4 8.5 0 0 0 56.6 111.6 Z"/><path class="s-indigo-shade" d="M41.1 116.8 A6.6 3.3 0 0 0 53.2 116.8 A9.4 8.5 0 0 1 41.1 116.8 Z"/><path class="s-alt" d="M56.6 111.6 A9.4 8.5 0 0 0 75.4 111.6 Z"/><path class="s-alt-shade" d="M60 116.8 A6.6 3.3 0 0 0 72 116.8 A9.4 8.5 0 0 1 60 116.8 Z"/><path class="s-indigo" d="M75.4 111.6 A9.4 8.5 0 0 0 94.3 111.6 Z"/><path class="s-indigo-shade" d="M78.8 116.8 A6.6 3.3 0 0 0 90.9 116.8 A9.4 8.5 0 0 1 78.8 116.8 Z"/><path class="s-alt" d="M94.3 111.6 A9.4 8.5 0 0 0 113.1 111.6 Z"/><path class="s-alt-shade" d="M97.7 116.8 A6.6 3.3 0 0 0 109.7 116.8 A9.4 8.5 0 0 1 97.7 116.8 Z"/><path class="s-indigo" d="M113.1 111.6 A9.4 8.5 0 0 0 132 111.6 Z"/><path class="s-indigo-shade" d="M116.5 116.8 A6.6 3.3 0 0 0 128.6 116.8 A9.4 8.5 0 0 1 116.5 116.8 Z"/><rect class="s-wood" x="6" y="83" width="120" height="7" rx="3.5"/><circle class="s-bulb" cx="0" cy="114.6" r="2.6"/><circle class="s-bulb" cx="18.9" cy="114.6" r="2.6"/><circle class="s-bulb" cx="37.7" cy="114.6" r="2.6"/><circle class="s-bulb" cx="56.6" cy="114.6" r="2.6"/><circle class="s-bulb" cx="75.4" cy="114.6" r="2.6"/><circle class="s-bulb" cx="94.3" cy="114.6" r="2.6"/><circle class="s-bulb" cx="113.1" cy="114.6" r="2.6"/><circle class="s-bulb" cx="132" cy="114.6" r="2.6"/><rect class="s-wood" x="12" y="165.9" width="108" height="40.1"/><rect class="s-wood-shade" x="30" y="173.9" width="2" height="32.1"/><rect class="s-wood-shade" x="48" y="173.9" width="2" height="32.1"/><rect class="s-wood-shade" x="66" y="173.9" width="2" height="32.1"/><rect class="s-wood-shade" x="84" y="173.9" width="2" height="32.1"/><rect class="s-wood-shade" x="102" y="173.9" width="2" height="32.1"/><rect class="s-wood-light" x="6" y="161.9" width="120" height="9" rx="2"/><rect class="s-saffron-dim" x="26" y="139.9" width="18" height="22" rx="5"/><rect class="s-saffron-shade" x="38" y="139.9" width="6" height="22" rx="3"/><rect class="s-wood" x="28" y="134.9" width="14" height="6" rx="2"/><rect class="s-jade-dim" x="52" y="134.9" width="18" height="27" rx="5"/><rect class="s-jade-shade" x="64" y="134.9" width="6" height="27" rx="3"/><rect class="s-wood" x="54" y="129.9" width="14" height="6" rx="2"/><rect class="s-crimson-dim" x="78" y="129.9" width="18" height="32" rx="5"/><rect class="s-crimson-shade" x="90" y="129.9" width="6" height="32" rx="3"/><rect class="s-wood" x="80" y="124.9" width="14" height="6" rx="2"/><ellipse class="s-ground-shade" cx="202" cy="206" rx="74.2" ry="7"/><rect class="s-inside" x="146" y="95.6" width="112" height="63.5"/><rect class="s-inside-shade" x="150" y="124.8" width="104" height="3"/><rect class="s-inside-shade" x="150" y="150.2" width="104" height="3"/><rect class="s-saffron-dim" x="158" y="111.8" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="160" y="108.8" width="6" height="3" rx="1"/><rect class="s-jade-dim" x="174" y="108.8" width="10" height="16" rx="3"/><rect class="s-inside-shade" x="176" y="105.8" width="6" height="3" rx="1"/><rect class="s-indigo-dim" x="190" y="111.8" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="192" y="108.8" width="6" height="3" rx="1"/><rect class="s-saffron-dim" x="206" y="111.8" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="208" y="108.8" width="6" height="3" rx="1"/><rect class="s-jade-dim" x="222" y="108.8" width="10" height="16" rx="3"/><rect class="s-inside-shade" x="224" y="105.8" width="6" height="3" rx="1"/><rect class="s-wood-light" x="160" y="135.2" width="26" height="15" rx="2"/><rect class="s-wood-shade" x="160" y="135.2" width="26" height="3" rx="1"/><rect class="s-wood-light" x="198" y="135.2" width="20" height="15" rx="2"/><rect class="s-wood-shade" x="198" y="135.2" width="20" height="3" rx="1"/><path class="s-cord cord" d="M176.4 97.6 V101.6"/><rect class="s-cap cap" x="172.5" y="101.6" width="7.8" height="1.4" rx="0.5"/><path class="s-saffron paper" d="M172.6 103 C168.1 104 168.1 117.4 172.6 118.4 L180.2 118.4 C184.7 117.4 184.7 104 180.2 103 Z"/><path class="s-saffron-shade paper" d="M178.5 103 Q181.1 110.7 178.5 118.4 L180.2 118.4 C184.7 117.4 184.7 104 180.2 103 Z"/><path class="s-saffron-glow paper" d="M174.5 105.2 Q172.1 110.7 174.5 116.2 Q176.9 110.7 174.5 105.2 Z"/><path class="s-rib rib" d="M174.1 103 Q171.7 110.7 174.1 118.4"/><path class="s-rib rib" d="M175.6 103 Q174.7 110.7 175.6 118.4"/><path class="s-rib rib" d="M177.2 103 Q178.1 110.7 177.2 118.4"/><path class="s-rib rib" d="M178.7 103 Q181.1 110.7 178.7 118.4"/><rect class="s-cap cap" x="173" y="118.4" width="6.8" height="1.3" rx="0.5"/><path class="s-cord cord" d="M176.4 119.7 V121.7"/><circle class="s-saffron-shade paper" cx="176.4" cy="122.3" r="0.9"/><path class="s-saffron paper" d="M175.6 123 L177.2 123 L178.1 128.5 L174.7 128.5 Z"/><path class="s-rib rib" d="M175.6 125 L175.2 128.5"/><path class="s-rib rib" d="M176.4 125 L176.4 128.5"/><path class="s-rib rib" d="M177.2 125 L177.6 128.5"/><path class="s-cord cord" d="M227.6 97.6 V101.6"/><rect class="s-cap cap" x="223.7" y="101.6" width="7.8" height="1.4" rx="0.5"/><path class="s-jade paper" d="M223.8 103 C219.3 104 219.3 117.4 223.8 118.4 L231.4 118.4 C235.9 117.4 235.9 104 231.4 103 Z"/><path class="s-jade-shade paper" d="M229.7 103 Q232.3 110.7 229.7 118.4 L231.4 118.4 C235.9 117.4 235.9 104 231.4 103 Z"/><path class="s-jade-glow paper" d="M225.7 105.2 Q223.3 110.7 225.7 116.2 Q228.1 110.7 225.7 105.2 Z"/><path class="s-rib rib" d="M225.3 103 Q222.9 110.7 225.3 118.4"/><path class="s-rib rib" d="M226.8 103 Q225.9 110.7 226.8 118.4"/><path class="s-rib rib" d="M228.4 103 Q229.3 110.7 228.4 118.4"/><path class="s-rib rib" d="M229.9 103 Q232.3 110.7 229.9 118.4"/><rect class="s-cap cap" x="224.2" y="118.4" width="6.8" height="1.3" rx="0.5"/><path class="s-cord cord" d="M227.6 119.7 V121.7"/><circle class="s-jade-shade paper" cx="227.6" cy="122.3" r="0.9"/><path class="s-jade paper" d="M226.8 123 L228.4 123 L229.3 128.5 L225.9 128.5 Z"/><path class="s-rib rib" d="M226.8 125 L226.4 128.5"/><path class="s-rib rib" d="M227.6 125 L227.6 128.5"/><path class="s-rib rib" d="M228.4 125 L228.8 128.5"/><rect class="s-wood" x="142" y="72" width="8" height="134"/><rect class="s-wood-shade" x="147" y="72" width="3" height="134"/><rect class="s-wood" x="254" y="72" width="8" height="134"/><rect class="s-wood-shade" x="259" y="72" width="3" height="134"/><path class="s-saffron" d="M136 68 L154.9 68 L147.7 95.6 L126 95.6 Z"/><path class="s-alt" d="M154.9 68 L173.7 68 L169.4 95.6 L147.7 95.6 Z"/><path class="s-saffron" d="M173.7 68 L192.6 68 L191.1 95.6 L169.4 95.6 Z"/><path class="s-alt" d="M192.6 68 L211.4 68 L212.9 95.6 L191.1 95.6 Z"/><path class="s-saffron" d="M211.4 68 L230.3 68 L234.6 95.6 L212.9 95.6 Z"/><path class="s-alt" d="M230.3 68 L249.1 68 L256.3 95.6 L234.6 95.6 Z"/><path class="s-saffron" d="M249.1 68 L268 68 L278 95.6 L256.3 95.6 Z"/><path class="s-saffron-shade" d="M126 90.6 L278 90.6 L278 95.6 L126 95.6 Z" opacity=".55"/><path class="s-saffron" d="M126 95.6 A10.9 9.8 0 0 0 147.7 95.6 Z"/><path class="s-saffron-shade" d="M129.9 101.6 A7.6 3.8 0 0 0 143.8 101.6 A10.9 9.8 0 0 1 129.9 101.6 Z"/><path class="s-alt" d="M147.7 95.6 A10.9 9.8 0 0 0 169.4 95.6 Z"/><path class="s-alt-shade" d="M151.6 101.6 A7.6 3.8 0 0 0 165.5 101.6 A10.9 9.8 0 0 1 151.6 101.6 Z"/><path class="s-saffron" d="M169.4 95.6 A10.9 9.8 0 0 0 191.1 95.6 Z"/><path class="s-saffron-shade" d="M173.3 101.6 A7.6 3.8 0 0 0 187.2 101.6 A10.9 9.8 0 0 1 173.3 101.6 Z"/><path class="s-alt" d="M191.1 95.6 A10.9 9.8 0 0 0 212.9 95.6 Z"/><path class="s-alt-shade" d="M195.1 101.6 A7.6 3.8 0 0 0 208.9 101.6 A10.9 9.8 0 0 1 195.1 101.6 Z"/><path class="s-saffron" d="M212.9 95.6 A10.9 9.8 0 0 0 234.6 95.6 Z"/><path class="s-saffron-shade" d="M216.8 101.6 A7.6 3.8 0 0 0 230.7 101.6 A10.9 9.8 0 0 1 216.8 101.6 Z"/><path class="s-alt" d="M234.6 95.6 A10.9 9.8 0 0 0 256.3 95.6 Z"/><path class="s-alt-shade" d="M238.5 101.6 A7.6 3.8 0 0 0 252.4 101.6 A10.9 9.8 0 0 1 238.5 101.6 Z"/><path class="s-saffron" d="M256.3 95.6 A10.9 9.8 0 0 0 278 95.6 Z"/><path class="s-saffron-shade" d="M260.2 101.6 A7.6 3.8 0 0 0 274.1 101.6 A10.9 9.8 0 0 1 260.2 101.6 Z"/><rect class="s-wood" x="132" y="63" width="140" height="7" rx="3.5"/><circle class="s-bulb" cx="126" cy="98.6" r="2.6"/><circle class="s-bulb" cx="147.7" cy="98.6" r="2.6"/><circle class="s-bulb" cx="169.4" cy="98.6" r="2.6"/><circle class="s-bulb" cx="191.1" cy="98.6" r="2.6"/><circle class="s-bulb" cx="212.9" cy="98.6" r="2.6"/><circle class="s-bulb" cx="234.6" cy="98.6" r="2.6"/><circle class="s-bulb" cx="256.3" cy="98.6" r="2.6"/><circle class="s-bulb" cx="278" cy="98.6" r="2.6"/><rect class="s-wood" x="138" y="159.1" width="128" height="46.9"/><rect class="s-wood-shade" x="156" y="167.1" width="2" height="38.9"/><rect class="s-wood-shade" x="174" y="167.1" width="2" height="38.9"/><rect class="s-wood-shade" x="192" y="167.1" width="2" height="38.9"/><rect class="s-wood-shade" x="210" y="167.1" width="2" height="38.9"/><rect class="s-wood-shade" x="228" y="167.1" width="2" height="38.9"/><rect class="s-wood-shade" x="246" y="167.1" width="2" height="38.9"/><rect class="s-wood-light" x="132" y="155.1" width="140" height="9" rx="2"/><circle class="s-saffron" cx="154.2" cy="147.1" r="6"/><circle class="s-saffron" cx="166.2" cy="147.1" r="6"/><circle class="s-saffron" cx="178.2" cy="147.1" r="6"/><circle class="s-saffron" cx="160.2" cy="139.1" r="6"/><circle class="s-saffron" cx="172.2" cy="139.1" r="6"/><path class="s-wood-light" d="M144.2 146.1 L188.2 146.1 L183.2 155.1 L149.2 155.1 Z"/><path class="s-wood-shade" d="M144.2 146.1 L188.2 146.1 L187.2 150.1 L145.2 150.1 Z"/><circle class="s-crimson" cx="190" cy="147.1" r="6"/><circle class="s-crimson" cx="202" cy="147.1" r="6"/><circle class="s-crimson" cx="214" cy="147.1" r="6"/><circle class="s-crimson" cx="196" cy="139.1" r="6"/><circle class="s-crimson" cx="208" cy="139.1" r="6"/><path class="s-wood-light" d="M180 146.1 L224 146.1 L219 155.1 L185 155.1 Z"/><path class="s-wood-shade" d="M180 146.1 L224 146.1 L223 150.1 L181 150.1 Z"/><circle class="s-plum" cx="225.8" cy="147.1" r="6"/><circle class="s-plum" cx="237.8" cy="147.1" r="6"/><circle class="s-plum" cx="249.8" cy="147.1" r="6"/><circle class="s-plum" cx="231.8" cy="139.1" r="6"/><circle class="s-plum" cx="243.8" cy="139.1" r="6"/><path class="s-wood-light" d="M215.8 146.1 L259.8 146.1 L254.8 155.1 L220.8 155.1 Z"/><path class="s-wood-shade" d="M215.8 146.1 L259.8 146.1 L258.8 150.1 L216.8 150.1 Z"/><ellipse class="s-ground-shade" cx="332" cy="206" rx="55.7" ry="7"/><rect class="s-inside" x="292" y="113.2" width="80" height="53.4"/><rect class="s-inside-shade" x="296" y="137.7" width="72" height="3"/><rect class="s-inside-shade" x="296" y="159.1" width="72" height="3"/><rect class="s-jade-dim" x="304" y="124.7" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="306" y="121.7" width="6" height="3" rx="1"/><rect class="s-saffron-dim" x="320" y="121.7" width="10" height="16" rx="3"/><rect class="s-inside-shade" x="322" y="118.7" width="6" height="3" rx="1"/><rect class="s-indigo-dim" x="336" y="124.7" width="10" height="13" rx="3"/><rect class="s-inside-shade" x="338" y="121.7" width="6" height="3" rx="1"/><rect class="s-wood-light" x="306" y="144.1" width="26" height="15" rx="2"/><rect class="s-wood-shade" x="306" y="144.1" width="26" height="3" rx="1"/><path class="s-cord cord" d="M332 115.2 V119.2"/><rect class="s-cap cap" x="328.1" y="119.2" width="7.8" height="1.4" rx="0.5"/><path class="s-jade paper" d="M328.2 120.6 C323.7 121.6 323.7 135 328.2 136 L335.8 136 C340.3 135 340.3 121.6 335.8 120.6 Z"/><path class="s-jade-shade paper" d="M334.1 120.6 Q336.7 128.3 334.1 136 L335.8 136 C340.3 135 340.3 121.6 335.8 120.6 Z"/><path class="s-jade-glow paper" d="M330.1 122.8 Q327.7 128.3 330.1 133.8 Q332.5 128.3 330.1 122.8 Z"/><path class="s-rib rib" d="M329.7 120.6 Q327.3 128.3 329.7 136"/><path class="s-rib rib" d="M331.2 120.6 Q330.3 128.3 331.2 136"/><path class="s-rib rib" d="M332.8 120.6 Q333.7 128.3 332.8 136"/><path class="s-rib rib" d="M334.3 120.6 Q336.7 128.3 334.3 136"/><rect class="s-cap cap" x="328.6" y="136" width="6.8" height="1.3" rx="0.5"/><path class="s-cord cord" d="M332 137.3 V139.3"/><circle class="s-jade-shade paper" cx="332" cy="139.9" r="0.9"/><path class="s-jade paper" d="M331.2 140.6 L332.8 140.6 L333.7 146.1 L330.3 146.1 Z"/><path class="s-rib rib" d="M331.2 142.6 L330.8 146.1"/><path class="s-rib rib" d="M332 142.6 L332 146.1"/><path class="s-rib rib" d="M332.8 142.6 L333.2 146.1"/><rect class="s-wood" x="288" y="94" width="8" height="112"/><rect class="s-wood-shade" x="293" y="94" width="3" height="112"/><rect class="s-wood" x="368" y="94" width="8" height="112"/><rect class="s-wood-shade" x="373" y="94" width="3" height="112"/><path class="s-jade" d="M282 90 L296.3 90 L289.1 113.2 L272 113.2 Z"/><path class="s-alt" d="M296.3 90 L310.6 90 L306.3 113.2 L289.1 113.2 Z"/><path class="s-jade" d="M310.6 90 L324.9 90 L323.4 113.2 L306.3 113.2 Z"/><path class="s-alt" d="M324.9 90 L339.1 90 L340.6 113.2 L323.4 113.2 Z"/><path class="s-jade" d="M339.1 90 L353.4 90 L357.7 113.2 L340.6 113.2 Z"/><path class="s-alt" d="M353.4 90 L367.7 90 L374.9 113.2 L357.7 113.2 Z"/><path class="s-jade" d="M367.7 90 L382 90 L392 113.2 L374.9 113.2 Z"/><path class="s-jade-shade" d="M272 108.2 L392 108.2 L392 113.2 L272 113.2 Z" opacity=".55"/><path class="s-jade" d="M272 113.2 A8.6 7.7 0 0 0 289.1 113.2 Z"/><path class="s-jade-shade" d="M275.1 117.9 A6 3 0 0 0 286.1 117.9 A8.6 7.7 0 0 1 275.1 117.9 Z"/><path class="s-alt" d="M289.1 113.2 A8.6 7.7 0 0 0 306.3 113.2 Z"/><path class="s-alt-shade" d="M292.2 117.9 A6 3 0 0 0 303.2 117.9 A8.6 7.7 0 0 1 292.2 117.9 Z"/><path class="s-jade" d="M306.3 113.2 A8.6 7.7 0 0 0 323.4 113.2 Z"/><path class="s-jade-shade" d="M309.4 117.9 A6 3 0 0 0 320.3 117.9 A8.6 7.7 0 0 1 309.4 117.9 Z"/><path class="s-alt" d="M323.4 113.2 A8.6 7.7 0 0 0 340.6 113.2 Z"/><path class="s-alt-shade" d="M326.5 117.9 A6 3 0 0 0 337.5 117.9 A8.6 7.7 0 0 1 326.5 117.9 Z"/><path class="s-jade" d="M340.6 113.2 A8.6 7.7 0 0 0 357.7 113.2 Z"/><path class="s-jade-shade" d="M343.7 117.9 A6 3 0 0 0 354.6 117.9 A8.6 7.7 0 0 1 343.7 117.9 Z"/><path class="s-alt" d="M357.7 113.2 A8.6 7.7 0 0 0 374.9 113.2 Z"/><path class="s-alt-shade" d="M360.8 117.9 A6 3 0 0 0 371.8 117.9 A8.6 7.7 0 0 1 360.8 117.9 Z"/><path class="s-jade" d="M374.9 113.2 A8.6 7.7 0 0 0 392 113.2 Z"/><path class="s-jade-shade" d="M377.9 117.9 A6 3 0 0 0 388.9 117.9 A8.6 7.7 0 0 1 377.9 117.9 Z"/><rect class="s-wood" x="278" y="85" width="108" height="7" rx="3.5"/><circle class="s-bulb" cx="272" cy="116.2" r="2.6"/><circle class="s-bulb" cx="289.1" cy="116.2" r="2.6"/><circle class="s-bulb" cx="306.3" cy="116.2" r="2.6"/><circle class="s-bulb" cx="323.4" cy="116.2" r="2.6"/><circle class="s-bulb" cx="340.6" cy="116.2" r="2.6"/><circle class="s-bulb" cx="357.7" cy="116.2" r="2.6"/><circle class="s-bulb" cx="374.9" cy="116.2" r="2.6"/><circle class="s-bulb" cx="392" cy="116.2" r="2.6"/><rect class="s-wood" x="284" y="166.6" width="96" height="39.4"/><rect class="s-wood-shade" x="302" y="174.6" width="2" height="31.4"/><rect class="s-wood-shade" x="320" y="174.6" width="2" height="31.4"/><rect class="s-wood-shade" x="338" y="174.6" width="2" height="31.4"/><rect class="s-wood-shade" x="356" y="174.6" width="2" height="31.4"/><rect class="s-wood-light" x="278" y="162.6" width="108" height="9" rx="2"/><rect class="s-saffron-dim" x="298" y="144.6" width="9" height="18" rx="1"/><rect class="s-indigo-dim" x="309" y="139.6" width="9" height="23" rx="1"/><rect class="s-jade-dim" x="320" y="134.6" width="9" height="28" rx="1"/><rect class="s-plum-dim" x="331" y="141.6" width="9" height="21" rx="1"/><rect class="s-crimson-dim" x="342" y="136.6" width="9" height="26" rx="1"/><rect class="s-saffron-dim" x="353" y="143.6" width="9" height="19" rx="1"/></svg>
+  </div>
+</div>
+
+<!-- overview -->
+<div class="phone s-overview">
+  <div class="bar"><span data-tents></span><h1>总览</h1><span class="icon-btn"><i data-i="bell" class="sm"></i><span class="dot"></span></span></div>
+  <div class="main">
+    <div class="greet"><div><h2>晚上好，<em>yuchanns</em></h2><p><b>3 位智能体</b>正在工作，<b>2 个新会话</b>等待审批。</p></div></div>
+    <div class="kpis">
+      <div class="card kpi"><div class="lbl"><i data-i="bot" class="sm"></i>运行中</div><div class="val num">6<small>/ 9</small></div>
+        <div class="row-lanterns"><span class="lantern work"></span><span class="lantern on"></span><span class="lantern fail"></span><span class="lantern work"></span><span class="lantern on"></span><span class="lantern off"></span></div></div>
+      <div class="card kpi hot"><div class="lbl"><i data-i="zap" class="sm"></i>正在工作</div><div class="val num">3<small>位</small></div><div class="foot">有马佳奈 · 啊夸</div></div>
+      <div class="card kpi"><div class="lbl"><i data-i="activity" class="sm"></i>今日轮次</div><div class="val num">128</div><div class="foot"><span class="up">↑ 14%</span> 较昨日</div></div>
+      <div class="card kpi"><div class="lbl"><i data-i="coins" class="sm"></i>今日用量</div><div class="val num">1.24<small>M</small></div><div class="foot">$4.37</div></div>
+    </div>
+    <div class="section-title"><h2>摊位</h2><span class="sub">4 台电脑 · 9 位智能体</span></div>
+    <div class="stalls">
+      <div class="card stall" style="--stripe:#f5b342;--stripe-2:#3d2c0e">
+        <div class="awning"></div>
+        <div class="stall-hd"><div class="os"><i data-l="linux"></i></div><div><div class="name">kana-vm</div><div class="meta">Fedora 44 · bcn 0.3.0</div></div><div class="right"><span class="online">在线</span></div></div>
+        <div class="vendors">
+          <div class="vendor focus"><span class="lantern work"></span><div><div class="nm">有马佳奈 <span class="g tg"><i data-l="telegram"></i></span></div><div class="doing"><b>正在处理</b> #bazaar-compute 开发 · 3 分钟</div></div></div>
+          <div class="vendor"><span class="lantern on"></span><div><div class="nm">Tifa <span class="g tg"><i data-l="telegram"></i></span></div><div class="doing">空闲 · 2 分钟前回复了王磊</div></div></div>
+        </div>
+      </div>
+      <div class="card stall" style="--stripe:#34c3a0;--stripe-2:#0e3a31">
+        <div class="awning"></div>
+        <div class="stall-hd"><div class="os"><i data-l="apple"></i></div><div><div class="name">aqua-mbp</div><div class="meta">macOS 26 · bcn 0.3.0</div></div><div class="right"><span class="online">在线</span></div></div>
+      </div>
+    </div>
+  </div>
+  <nav class="tabs"><span class="on"><i data-i="overview"></i>总览</span><span><i data-i="bot"></i>智能体</span><span><i data-i="chats"></i>会话</span><span><i data-i="monitor"></i>电脑</span><span><i data-i="settings"></i>设置</span></nav>
+</div>
+
+<!-- settings: the list of sections, logging out at the end as in 0.2 -->
+<div class="phone s-settings">
+  <div class="bar"><h1>设置</h1></div>
+  <div class="main">
+    <div class="card who"><span class="av sq h1">Y</span><div><b>yuchanns</b><span>管理员</span></div></div>
+    <div class="card rows">
+      <div class="rowl"><i data-i="sun"></i><div><b>外观</b><span>语言与显示主题</span></div><i data-i="right" class="sm"></i></div>
+      <div class="rowl"><i data-i="key"></i><div><b>安全</b><span>修改登录密码</span></div><i data-i="right" class="sm"></i></div>
+      <div class="rowl"><i data-i="lock"></i><div><b>登录方式</b><span>账号密码与第三方登录</span></div><i data-i="right" class="sm"></i></div>
+      <div class="rowl"><i data-i="users"></i><div><b>成员与角色</b><span>账号、角色与分享</span></div><i data-i="right" class="sm"></i></div>
+    </div>
+    <div class="btn leave"><i data-i="logout" class="sm"></i>退出登录</div>
+  </div>
+  <nav class="tabs"><span><i data-i="overview"></i>总览</span><span><i data-i="bot"></i>智能体</span><span><i data-i="chats"></i>会话</span><span><i data-i="monitor"></i>电脑</span><span class="on"><i data-i="settings"></i>设置</span></nav>
+</div>
+
+<!-- one section, with the way back -->
+<div class="phone s-appearance">
+  <div class="bar"><span class="back"><i data-i="left"></i></span><h1>外观</h1></div>
+  <div class="main">
+    <div class="card form">
+      <div class="fld"><label>语言</label><div class="select">简体中文<i data-i="down" class="sm"></i></div></div>
+      <div class="fld"><label>主题模式</label><div class="seg wide"><span class="on">跟随系统</span><span>总是白天</span><span>总是黑夜</span></div></div>
+      <div class="fld"><label>白天主题</label><div class="picks"><div class="pick on"><div class="palette"><i style="background:#f5efe4"></i><i style="background:#fffcf6"></i><i style="background:#1f1b15"></i><i style="background:#e39a1c"></i><i style="background:#0f9476"></i><i style="background:#d43c41"></i><i style="background:#4d5fd6"></i><span class="tick"><i data-i="check" class="xs"></i></span></div><span>晨市</span></div><div class="pick"><div class="palette"><i style="background:#0a0d12"></i><i style="background:#151b25"></i><i style="background:#ece6da"></i><i style="background:#f5b342"></i><i style="background:#34c3a0"></i><i style="background:#f2555a"></i><i style="background:#8f9dff"></i></div><span>夜市</span></div></div></div>
+      <div class="fld"><label>黑夜主题</label><div class="picks"><div class="pick"><div class="palette"><i style="background:#f5efe4"></i><i style="background:#fffcf6"></i><i style="background:#1f1b15"></i><i style="background:#e39a1c"></i><i style="background:#0f9476"></i><i style="background:#d43c41"></i><i style="background:#4d5fd6"></i></div><span>晨市</span></div><div class="pick on"><div class="palette"><i style="background:#0a0d12"></i><i style="background:#151b25"></i><i style="background:#ece6da"></i><i style="background:#f5b342"></i><i style="background:#34c3a0"></i><i style="background:#f2555a"></i><i style="background:#8f9dff"></i><span class="tick"><i data-i="check" class="xs"></i></span></div><span>夜市</span></div></div></div>
+    </div>
+  </div>
+  <nav class="tabs"><span><i data-i="overview"></i>总览</span><span><i data-i="bot"></i>智能体</span><span><i data-i="chats"></i>会话</span><span><i data-i="monitor"></i>电脑</span><span class="on"><i data-i="settings"></i>设置</span></nav>
+</div>
+
+</body>
+</html>
