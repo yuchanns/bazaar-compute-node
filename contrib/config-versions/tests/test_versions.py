@@ -217,3 +217,38 @@ def test_v4_node_timer_mapping_and_v5_provider_selection(tmp_path: Path, monkeyp
         ],
     }
     assert converter.convert(payload).payload == payload
+
+
+def test_v4_brings_the_server_along_when_bcs_has_its_settings(
+    tmp_path: Path, monkeypatch
+):
+    from bazaar_contrib_config import ConfigDocument
+
+    from bazaar_contrib_config_versions import Converter
+
+    monkeypatch.setenv("BCN_HOME", str(tmp_path))
+    converter = Converter("5", Converter("4"))
+    server = {"http", "server-database", "server-migrations"}
+
+    def converted() -> tuple[dict[str, dict[str, object]], set[str]]:
+        candidate = converter.convert({"version": "4", "node": {}, "agent": []})
+        document = ConfigDocument.model_validate(candidate.payload)
+        return (
+            {
+                entry.entry: entry.config
+                for package in document.contribs
+                for entry in package.enabled
+            },
+            {requirement.package for requirement in candidate.required_packages},
+        )
+
+    assert not server & converted()[0].keys()
+    (tmp_path / ".bcs").mkdir()
+    (tmp_path / ".bcs" / "config.toml").write_text(
+        'listen = "127.0.0.1:9876"\nstorage = "sqlite"\n', encoding="utf-8"
+    )
+    enabled, packages = converted()
+    assert enabled["http"] == {"listen": "127.0.0.1:9876"}
+    assert enabled["server-database"]["storage"] == "sqlite"
+    assert "server-migrations" in enabled
+    assert {f"bazaar-contrib-{name}" for name in server} <= packages
