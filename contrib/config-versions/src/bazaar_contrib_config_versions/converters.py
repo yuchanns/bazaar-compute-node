@@ -154,6 +154,16 @@ def migrate_v5(payload: Mapping[str, object]) -> ConfigCandidate:
             {"storage": storage, "storage_options": server.get(storage, {})},
         )
         add("server-migrations", "server-migrations")
+        add("server", "server")
+        add("server-theme-night", "server")
+        add("server-theme-day", "server")
+        add(
+            "server-access",
+            "server-access",
+            {"session_minutes": server["session_minutes"]}
+            if "session_minutes" in server
+            else None,
+        )
     changes.extend(
         [
             FieldChange(

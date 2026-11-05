@@ -228,7 +228,15 @@ def test_v4_brings_the_server_along_when_bcs_has_its_settings(
 
     monkeypatch.setenv("BCN_HOME", str(tmp_path))
     converter = Converter("5", Converter("4"))
-    server = {"http", "server-database", "server-migrations"}
+    server = {
+        "http",
+        "server-database",
+        "server-migrations",
+        "server",
+        "server-theme-night",
+        "server-theme-day",
+        "server-access",
+    }
 
     def converted() -> tuple[dict[str, dict[str, object]], set[str]]:
         candidate = converter.convert({"version": "4", "node": {}, "agent": []})
@@ -245,10 +253,22 @@ def test_v4_brings_the_server_along_when_bcs_has_its_settings(
     assert not server & converted()[0].keys()
     (tmp_path / ".bcs").mkdir()
     (tmp_path / ".bcs" / "config.toml").write_text(
-        'listen = "127.0.0.1:9876"\nstorage = "sqlite"\n', encoding="utf-8"
+        'listen = "127.0.0.1:9876"\nstorage = "sqlite"\nsession_minutes = 25\n',
+        encoding="utf-8",
     )
     enabled, packages = converted()
     assert enabled["http"] == {"listen": "127.0.0.1:9876"}
     assert enabled["server-database"]["storage"] == "sqlite"
     assert "server-migrations" in enabled
-    assert {f"bazaar-contrib-{name}" for name in server} <= packages
+    assert {"server", "server-theme-night", "server-theme-day"} <= enabled.keys()
+    assert enabled["server-access"] == {"session_minutes": 25}
+    assert {
+        f"bazaar-contrib-{name}"
+        for name in (
+            "http",
+            "server-database",
+            "server-migrations",
+            "server",
+            "server-access",
+        )
+    } <= packages
