@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from time import time_ns
@@ -97,17 +98,44 @@ class HarnessSkill(BaseModel):
     source: str
 
 
+class McpConnection(StrEnum):
+    """How a runtime's link to an MCP server stands, short of failing."""
+
+    CONNECTED = "connected"
+    CONNECTING = "connecting"
+    DISABLED = "disabled"
+
+
+@dataclass(frozen=True, slots=True)
+class McpFailed:
+    """The runtime could not connect to the MCP server, and why."""
+
+    reason: str
+
+
+class McpAuth(StrEnum):
+    """Whether an MCP server wants a sign-in, and has one."""
+
+    NONE = "none"
+    SIGNED_IN = "signed_in"
+    SIGNED_OUT = "signed_out"
+
+
 class HarnessMcpTool(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str
     description: str | None = None
-    input_schema: dict[str, JsonValue]
+    input_schema: dict[str, JsonValue] | None = None
 
 
 class HarnessMcpServer(BaseModel):
+    """An MCP server as a runtime sees it; what the runtime does not say is
+    left out."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str
-    auth_status: str | None = None
+    connection: McpConnection | McpFailed | None = None
+    auth: McpAuth | None = None
     tools: tuple[HarnessMcpTool, ...] = ()
 
 

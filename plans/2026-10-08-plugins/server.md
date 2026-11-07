@@ -424,7 +424,7 @@ server-agent 对所有插件使用同一套画法：字符串为输入框，枚�
 - 详情为整页：头部为头像、名称、状态与事实标签（各渠道的机器人名，按顺序的运行时模型与强度，所在电脑，模式），标签按整块换行；tab 为动态、工作区、技能、配置与共享。
   - 动态：智能体的状态、已运行时长、启动时间与最后一次活动；各渠道的连接状态（重新连接中时带第几次）、连接于、最后收到与最近错误；各运行时的顺序、是否在用、是否可用、版本（取自 inspect）、档位与凭据的状态；今日用量的总量，以及输入、缓存命中、输出与费用。状态卡片可以手动刷新。离线时显示最后一次取得的样子。
   - 工作区：标题注明所在电脑与绝对路径；目录逐层展开，点开时才读取下一层，每次 50 项，末尾的「显示更多」写明已列出与剩余的项数，点了读取下一页；可以重新读取。点开文件在右侧抽屉中查看：Markdown 文件经 server 本体的 markdown 过滤器渲染；其他文本按文件名由 Pygments 识别语言（`get_lexer_for_filename`，例如 toml、py、json 与 yaml），以代码块显示并带行号，着色与 server 本体 Markdown 中的代码块相同，使用 `tok-` 前缀的类名，颜色随主题，识别不了的按纯文本显示；无法显示的文件只显示大小，并说明暂不支持查看该文件。抽屉标题旁为识别出的语言、大小与修改时间，下方为绝对路径，可以复制。查看文件与列目录一样需要 agents.view。
-  - 技能：在用运行时的 inspect 返回的 skills，按来源（工作区、用户、系统）分组，并注明运行时的版本与读取时间；另列 MCP 服务的认证状态与工具。
+  - 技能：在用运行时的 inspect 返回的 skills，按来源（工作区、用户、系统）分组，并注明运行时的版本与读取时间；另列 inspect 返回的 MCP 服务与工具，服务的连接与登录状态是 harness 契约中的公共枚举，运行时不知道的留空，连接失败时带原因。
   - 配置：基本信息（名称、空闲回收、模式与会话沙箱）直接在页面上编辑；渠道与运行时为可增删的列表，运行时可拖动排序；点「编辑」在右侧抽屉中按实体配置模型的 schema 编辑一个条目，凭据只显示已保存，留空即保持不变。页脚的保存经 `agent-configuration.edit` 提交整份配置，带 `list()` 的修订号与各条目的连接名。侧栏说明保存之后的情形，并有删除。
   - 共享：抽屉中以 iframe 载入 server-access 的分享页。
 - 新建向导分四步：基本信息（名称、电脑、模式、会话沙箱、空闲回收）；渠道（所选电脑上已启用的渠道插件，可选多个）；运行时（已启用的运行时插件，可选多个并排定顺序，模型与档位取自 inspect）；确认（按 schema 列出有值的字段）。创建经 `agent-configuration.add`。
@@ -497,10 +497,11 @@ server-agent 对所有插件使用同一套画法：字符串为输入框，枚�
 - Task 54：先在 BCN `0.3-server` 让 `channel.connection.failed` 的重试时间可以为空、agent-activity 区分重新连接中与已断开，并发布 bazaar-compute 的 rc；再做渠道与运行时插件：contrib-telegram、contrib-lark 与 contrib-wecom 的配置模型标注并改发统一的连接事件，contrib-codex 与 contrib-claudecode 的配置模型标注。各自发布 rc。
   - 验证：BCN：渠道报告不再重连时 agent-activity 给出已断开，重新连上后恢复为运行中。
   - 验证：各插件的 schema 带凭据的 writeOnly、`x-locales` 中英文的名称与说明、枚举文字、留空含义与 inspect 标注；各渠道连上时发出带机器人身份的连接事件，事件上下文带有连接名，插件代码不涉及连接名；telegram 以同一机器人的另一次 getUpdates 打断长轮询，验证失败与重连的事件；wecom 以同一机器人的另一个连接接管，验证不再重试的失败事件。
-- Task 55：server 侧：contrib-server-access 的 `points`，contrib-server-computer 的 `computers(ids)` 与 `COMPUTER_REMOVED`，新仓库 contrib-server-agent 的 server-agent，以及 contrib-server-management 的默认配置加入 server-agent。发版顺序为 bazaar-contrib-server-access、bazaar-contrib-server-computer、bazaar-contrib-server-agent、bazaar-contrib-server-management。
+- Task 55：server 侧：contrib-server-access 的 `points`，contrib-server-computer 的 `computers(ids)` 与 `COMPUTER_REMOVED`，新仓库 contrib-server-agent 的 server-agent，以及 contrib-server-management 的默认配置加入 server-agent；按消息 `c2615c37-cdfd-5709-a9f1-0e02a9aeea13` 与 `1afb7e1f-dfb8-579d-82d9-599821a29a1f`，harness 契约中 MCP 服务的状态改为公共枚举（连接：已连接、连接中、已停用，或带原因的失败；登录：不需要、已登录、未登录），contrib-codex 与 contrib-claudecode 的 inspect 按它补上 MCP 服务。发版顺序为 bazaar-compute、bazaar-contrib-codex、bazaar-contrib-claude-code、bazaar-contrib-server-access、bazaar-contrib-server-computer、bazaar-contrib-server-agent、bazaar-contrib-server-management。
   - 验证：只分享了查看的角色看得到 agent 但不能修改，分享了修改后可以保存配置；拥有者可以分享；电脑的分享页出现 agents.create，没有分享时新建向导不列出该电脑。
   - 验证：以真实浏览器在 1440px 与 390px 宽度下完成新建（两个渠道、两个运行时）、配置修改（凭据留空不变，运行时调换顺序）、工作区展开与显示更多、查看 Markdown 文件与按类型着色的代码文件、技能查看、分享与删除，与 design 中智能体的效果图一致。
   - 验证：电脑离线后列表仍列出它的 agent 并标为离线；删除电脑后它的 agent 与分享随之删除；REPORTED 的回合事件到达时，侧边栏的「正在工作」随之出现与消失。
+  - 验证：codex 与 claudecode 的 e2e 中，inspect 给出工作区的 MCP 服务、按枚举的状态与它的工具。
 - Task 56：config-versions 的 V4→V5 转换在 ~/.bcs 存在时加入 server-agent，contrib-index 登记 bazaar-contrib-server-agent，然后发布 bazaar-compute 的 rc，内置索引随之带上它。
   - 验证：已有 0.2 节点配置与 ~/.bcs 时，V4→V5 转换声明 bazaar-contrib-server-agent 并启用 server-agent；contrib-index 的检查通过。
 - Task 57：两端验收：contrib-server-management 的两端用例加入经页面新建、修改与删除 agent。
