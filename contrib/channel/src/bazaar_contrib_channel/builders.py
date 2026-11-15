@@ -11,7 +11,7 @@ from bazaar_core import Composition, Context, Contrib, ContribEntry, ServiceKey
 from pydantic import BaseModel, ConfigDict
 
 from .contracts import Channel
-from .models import ChannelInput
+from .models import ChannelInput, ChannelTarget
 
 CHANNEL = ServiceKey[Channel]("channel.instance")
 CHANNEL_INPUT = ServiceKey[ChannelInput]("channel.input")
@@ -38,6 +38,12 @@ class ChannelBuilder(BaseModel):
     def entry(self) -> Contrib[Any]:
         return self.definition.entry
 
+    def conversation_key(
+        self, target: ChannelTarget, configs: tuple[dict[str, Any], ...] = ()
+    ) -> str | None:
+        """Identify a shared conversation without connecting a channel."""
+        return self.definition.conversation_key(target, configs)
+
     def compose(self, values: dict[str, Any], input: ChannelInput) -> Composition:
         config = self.entity_model.model_validate(values)
         return Composition(
@@ -61,6 +67,19 @@ class ChannelBuilderConfig(BaseModel):
     kind: ClassVar[str]
     entity_model: ClassVar[type[BaseModel]]
     entry: ClassVar[Contrib[Any]]
+
+    @classmethod
+    def conversation_key(
+        cls, target: ChannelTarget, configs: tuple[dict[str, Any], ...] = ()
+    ) -> str | None:
+        """Return an opaque key shared by bots observing the same group/topic.
+
+        target carries the stored provider address. configs contains all of
+        this agent's configurations of this channel kind, not a selected
+        connection. The provider includes its identity scope in the key and
+        returns None when the address and context cannot establish it.
+        """
+        return None
 
     @classmethod
     def builder(cls) -> ChannelBuilder:

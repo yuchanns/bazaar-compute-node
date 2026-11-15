@@ -157,7 +157,7 @@ requires-dist = [
 
 [[package]]
 name = "bazaar-contrib-channel"
-version = "0.3.0rc32"
+version = "0.3.0rc33"
 source = { editable = "contrib/channel" }
 dependencies = [
     { name = "bazaar-contrib-harness" },
