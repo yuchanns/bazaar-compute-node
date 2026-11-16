@@ -1,6 +1,6 @@
 [project]
 name = "bazaar-contrib-schema"
-version = "0.3.0rc32"
+version = "0.3.0rc33"
 description = "Module schema registration and versioned migrations"
 readme = "README.md"
 license = "Apache-2.0"
