@@ -3,9 +3,11 @@ runtimes are, kept in memory as Bazaar Server reads them."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from time import time_ns
 
@@ -15,11 +17,19 @@ from bazaar_contrib_channel import (
     ChannelConnectionFailed,
     ChannelIdentity,
 )
-from bazaar_contrib_harness import HarnessOutput, UsageUpdated
+from bazaar_contrib_harness import (
+    HarnessOutput,
+    QuotaReader,
+    QuotaSnapshot,
+    UsageUpdated,
+)
 from bazaar_contrib_sidecar import RemoteEntry
 from bazaar_core import Context, Contrib, ContribStatus, ServiceKey, Stopping
 
 from .registry import AGENTS, AgentInstances
+from .states import Lifecycle
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +85,7 @@ class RuntimeStatus:
     state: str
     in_use: bool
     banned_until_ms: int | None
+    quota: QuotaSnapshot | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +183,47 @@ class AgentActivity:
             )
         self.last[agent] = (event.event_name, event.occurred_at_ms)
 
-    def agents(self) -> dict[str, Activity]:
+    async def agents(self) -> dict[str, Activity]:
+        async def read_quota(
+            agent: str, connection: str, reader: QuotaReader
+        ) -> QuotaSnapshot | None:
+            try:
+                return await reader.read_quota()
+            except Exception:
+                logger.exception(
+                    "runtime quota read failed for agent %s, connection %s",
+                    agent,
+                    connection,
+                )
+                return None
+
+        snapshot = self.snapshot()
+        readers: dict[tuple[str, str], asyncio.Task[QuotaSnapshot | None]] = {}
+        async with asyncio.TaskGroup() as group:
+            for agent, identity in self.instances.running.items():
+                loop = identity._loop
+                if agent not in snapshot or loop is None:
+                    continue
+                for runtime in loop.runtimes.values():
+                    if runtime.state is Lifecycle.RUNNING and isinstance(
+                        runtime.harness, QuotaReader
+                    ):
+                        readers[agent, runtime.key] = group.create_task(
+                            read_quota(agent, runtime.key, runtime.harness)
+                        )
+        for agent, activity in snapshot.items():
+            snapshot[agent] = replace(
+                activity,
+                runtimes=tuple(
+                    replace(runtime, quota=reader.result())
+                    if (reader := readers.get((agent, runtime.connection))) is not None
+                    else runtime
+                    for runtime in activity.runtimes
+                ),
+            )
+        return snapshot
+
+    def snapshot(self) -> dict[str, Activity]:
         self._roll(date.today())
         said_at_ms = time_ns() // 1_000_000
         usage: dict[str, Usage] = {}

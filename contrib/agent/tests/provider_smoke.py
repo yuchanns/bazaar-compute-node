@@ -776,7 +776,7 @@ async def exercise(path: Path):
                     connected[name] = peer
 
                 def status(name: str) -> Activity:
-                    return activities[0].agents()[name]
+                    return activities[0].snapshot()[name]
 
                 async def settled(done: Callable[[], bool]) -> None:
                     while not done():  # noqa: ASYNC110

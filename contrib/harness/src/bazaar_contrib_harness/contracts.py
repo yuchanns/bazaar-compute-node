@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from .events import HarnessOutput
 from .models import (
@@ -16,6 +16,7 @@ from .models import (
     HarnessExpire,
     HarnessSession,
     HarnessTurn,
+    QuotaSnapshot,
     SessionInput,
 )
 from .outcomes import ProviderCallResult
@@ -37,6 +38,13 @@ class HarnessTurnStream(Protocol):
     async def __anext__(self) -> HarnessOutput: ...
 
     async def aclose(self) -> None: ...
+
+
+@runtime_checkable
+class QuotaReader(Protocol):
+    async def read_quota(self) -> QuotaSnapshot | None:
+        """Read the current account's quota without starting a turn."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
