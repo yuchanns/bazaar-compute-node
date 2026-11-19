@@ -16,6 +16,7 @@ from .contracts import (
     HarnessSessionReconciliation,
     HarnessSessionUnavailable,
     HarnessTurnStream,
+    QuotaReader,
 )
 from .events import (
     AgentDetail,
@@ -69,6 +70,8 @@ from .models import (
     McpAuth,
     McpConnection,
     McpFailed,
+    QuotaSnapshot,
+    QuotaWindow,
     SandboxPolicy,
     SessionInput,
 )
@@ -128,6 +131,9 @@ __all__ = [
     "OtherDetail",
     "ProviderCallResult",
     "ProviderCallStatus",
+    "QuotaReader",
+    "QuotaSnapshot",
+    "QuotaWindow",
     "SandboxPolicy",
     "SessionInput",
     "TokenUsage",

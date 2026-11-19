@@ -149,6 +149,20 @@ class HarnessInspection(BaseModel):
     error: str | None = None
 
 
+class QuotaWindow(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    name: str | None = None
+    duration_minutes: int | None = None
+    remaining_pct: float
+    resets_at_ms: int | None = None
+
+
+class QuotaSnapshot(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    observed_at_ms: int
+    windows: tuple[QuotaWindow, ...]
+
+
 class HarnessExpire(BaseModel):
     """Mark the provider's session contexts for replacement when safe."""
 
